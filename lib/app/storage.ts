@@ -1,6 +1,8 @@
 import type { Nivel } from "../game/match"
 import { DEFAULT_TEAMS, MAX_CUSTOM_TEAMS, sanitizeTeam } from "./teams"
 import type { Team } from "./teams"
+import { sanitizeCup } from "./cup"
+import type { Cup } from "./cup"
 
 export const STORAGE_KEY = "funko-patin:v1"
 export const DURATIONS = [60, 120, 180, 300] as const
@@ -18,6 +20,8 @@ export interface Settings {
 export interface Saved {
   customTeams: Team[]
   settings: Settings
+  /** Copa en curso (llave de eliminación directa), si hay una. */
+  cup: Cup | null
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -54,12 +58,13 @@ export function normalize(saved: Saved): Saved {
   if (!teams.some((t) => t.id === s.visitId) || s.visitId === s.localId) {
     s.visitId = (teams.find((t) => t.id !== s.localId) ?? teams[0]).id
   }
+  if (saved.cup && !saved.cup.teamIds.every((id) => teams.some((t) => t.id === id))) saved.cup = null
   return saved
 }
 
 /** Lee lo guardado. Nunca lanza: ante cualquier dato roto vuelve a los valores por defecto. */
 export function load(storage: Storage | null = safeStorage()): Saved {
-  const fresh = (): Saved => ({ customTeams: [], settings: { ...DEFAULT_SETTINGS } })
+  const fresh = (): Saved => ({ customTeams: [], settings: { ...DEFAULT_SETTINGS }, cup: null })
   if (!storage) return fresh()
   try {
     const raw = storage.getItem(STORAGE_KEY)
@@ -86,6 +91,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.visitId === "string") out.settings.visitId = s.visitId
     if (typeof s.leftHanded === "boolean") out.settings.leftHanded = s.leftHanded
     if (typeof s.sound === "boolean") out.settings.sound = s.sound
+    out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)
   } catch {
     return fresh()
@@ -95,7 +101,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
 export function save(saved: Saved, storage: Storage | null = safeStorage()): boolean {
   if (!storage) return false
   try {
-    storage.setItem(STORAGE_KEY, JSON.stringify({ v: 1, customTeams: saved.customTeams, settings: saved.settings }))
+    storage.setItem(STORAGE_KEY, JSON.stringify({ v: 1, customTeams: saved.customTeams, settings: saved.settings, cup: saved.cup }))
     return true
   } catch {
     return false

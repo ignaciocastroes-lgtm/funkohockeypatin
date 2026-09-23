@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { SKATER, kick, kickoff, setInput, createWorld, stepWorld, FIXED_DT } from "../../lib/engine"
+import { SKATER, MATCH, kick, kickoff, setInput, createWorld, stepWorld, FIXED_DT } from "../../lib/engine"
 import { GOALS, RINK, cleanWorld, lcg, makeWorld, parkOthers, place, run, shootPuck } from "./helpers"
 
 test("un puck suelto cerca se recoge y queda pegado al palo mientras te mueves", () => {
@@ -126,15 +126,30 @@ test("gol: marcador, pausa, y saque inicial automático", () => {
   assert.equal(w.puck.carrierId, null)
 })
 
-test("el reloj termina el partido y luego nada se mueve", () => {
+test("el reloj llega a 0 pero concede tiempo de gracia antes de terminar", () => {
   const w = makeWorld({ teamSize: 1, duration: 1 })
-  const ev = run(w, 1.2)
+  run(w, 1.05)
+  assert.equal(w.clock, 0)
+  assert.equal(w.phase, "timeOn", "no debe cortar en seco: hay un breve tiempo de gracia")
+})
+
+test("el reloj termina el partido tras el tiempo de gracia y luego nada se mueve", () => {
+  const w = makeWorld({ teamSize: 1, duration: 1 })
+  const ev = run(w, 1 + MATCH.timeOnGrace + 0.2)
   assert.equal(w.phase, "ended")
   assert.ok(ev.some((e) => e.type === "end"))
   const snap = JSON.stringify(w.skaters)
   w.skaters[0].inputX = 1
   run(w, 1)
   assert.equal(JSON.stringify(w.skaters.map((s) => [s.x, s.y])), JSON.stringify(JSON.parse(snap).map((s: any) => [s.x, s.y])))
+})
+
+test("un tiro lanzado justo antes de 0:00 puede seguir siendo gol durante el tiempo de gracia", () => {
+  const w = cleanWorld({ duration: 1 })
+  run(w, 0.9)
+  shootPuck(w, 34, RINK.width / 2, 25, 0) // a 3 m de la línea (37), llega en ~0.12 s
+  const ev = run(w, 0.5, (x) => x.phase === "goal" || x.phase === "ended")
+  assert.ok(ev.some((e) => e.type === "goal"), "el gol marcado durante el tiempo de gracia debe contar")
 })
 
 test("el reloj se detiene durante la celebración de gol", () => {

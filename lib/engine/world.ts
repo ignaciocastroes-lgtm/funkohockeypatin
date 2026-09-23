@@ -1,4 +1,4 @@
-import { FIXED_DT, GOALIE, MATCH, PUCK, RINK, RULES, SKATER, SKATER_KINDS, SURFACES } from "./constants"
+import { FIXED_DT, GOAL, GOALIE, MATCH, PUCK, RINK, RULES, SKATER, SKATER_KINDS, SURFACES } from "./constants"
 import { boardContact, collectContacts, GOALS, type Contact } from "./geometry"
 import type { GameEvent, Goalie, Puck, Side, Skater, SkaterKind, World, WorldConfig } from "./types"
 
@@ -189,9 +189,34 @@ export function stepWorld(w: World, dt: number = FIXED_DT): void {
     return
   }
 
+  if (w.phase === "timeOn") {
+    w.time += dt
+    w.phaseTimer -= dt
+    simulateTick(w, dt)
+    // updatePuck puede haber marcado gol (w.phase pasa a "goal"): no lo pisamos.
+    if (w.phase === "timeOn" && w.phaseTimer <= 0) {
+      w.phase = "ended"
+      emit(w, { type: "end" })
+    }
+    return
+  }
+
   w.time += dt
   w.clock -= dt
+  simulateTick(w, dt)
 
+  if (w.phase === "play" && w.clock <= 0) {
+    w.clock = 0
+    // El reloj llegó a 0: si el puck está suelto o en el aire, se concede un breve
+    // tiempo de gracia para que la jugada en curso pueda terminar (p. ej. un tiro ya
+    // lanzado) en vez de cortarla en seco.
+    w.phase = "timeOn"
+    w.phaseTimer = MATCH.timeOnGrace
+  }
+}
+
+/** Un paso de física/reglas, compartido entre la fase normal de juego y el tiempo de gracia. */
+function simulateTick(w: World, dt: number) {
   updateBench(w, dt)
   updateSkaters(w, dt)
   updateGoalies(w, dt)
@@ -199,12 +224,6 @@ export function stepWorld(w: World, dt: number = FIXED_DT): void {
   applyFouls(w)
   resolveBodiesVsStatics(w)
   updatePuck(w, dt)
-
-  if (w.phase === "play" && w.clock <= 0) {
-    w.clock = 0
-    w.phase = "ended"
-    emit(w, { type: "end" })
-  }
 }
 
 // ---------- reglas: faltas y tarjeta azul ----------
@@ -307,8 +326,21 @@ function updateGoalies(w: World, dt: number) {
   for (const g of w.goalies) {
     const geom = GOALS[g.side]
     const limit = GOALIE.range
-    // lo que el portero "ve": por defecto cierra el ángulo siguiendo al puck a medias...
-    let seenY = geom.cy + (p.y - geom.cy) * 0.6
+
+    // Profundidad: por defecto vive a `standoff` de la línea, pero sale a cerrar el ángulo
+    // (como un portero de verdad) cuando el atacante se acerca, hasta `advanceMax` de más.
+    const distToLine = Math.abs(geom.lineX - p.x)
+    const closeness = clamp(1 - distToLine / GOALIE.advanceRange, 0, 1)
+    const targetStandoff = GOALIE.standoff + closeness * GOALIE.advanceMax
+    const targetX = geom.lineX - geom.dir * targetStandoff
+    const maxAdvStep = GOALIE.advanceSpeed * dt
+    g.x += clamp(targetX - g.x, -maxAdvStep, maxAdvStep)
+
+    // Por defecto NO sigue solo la Y del puck: se para sobre la línea imaginaria puck→centro
+    // de la portería evaluada en su propia X. Es la técnica real de "tapar el ángulo": así el
+    // arco se ve más chico desde donde está parado el atacante, no solo cuando tira de frente.
+    const denom = geom.lineX - p.x
+    let seenY = Math.abs(denom) > 1e-6 ? p.y + (geom.cy - p.y) * clamp((g.x - p.x) / denom, 0, 1) : geom.cy
     // ...y cuando sale un disparo tarda un instante en reaccionar
     const incoming = p.vx * geom.dir > GOALIE.shotSpeed && !p.carrierId
     if (incoming && !g.wasIncoming) g.reactTimer = GOALIE.reactionDelay
@@ -410,7 +442,7 @@ function resolveBodiesVsStatics(w: World) {
   const E = SKATER.boardRestitution
   for (const s of w.skaters) {
     for (let pass = 0; pass < 3; pass++) {
-      collectContacts(s.x, s.y, s.radius, true, _contacts)
+      collectContacts(s.x, s.y, s.radius, true, _contacts, true)
       if (_contacts.length === 0) break
       for (const c of _contacts) {
         s.x += c.nx * c.pen
@@ -473,6 +505,24 @@ function checkGoalCrossing(ox: number, oy: number, nx: number, ny: number): Side
   return null
 }
 
+/**
+ * ¿El centro del puck YA está dentro de la boca de una portería (más allá de la línea,
+ * dentro del ancho de los postes y de la profundidad de la red)?
+ * Cubre los casos en los que el puck no "cruza" la línea en este frame porque fue
+ * colocado directamente ahí (p. ej. el palo lo empuja al llevarlo, o un rebote lo deja
+ * ya del otro lado de la línea).
+ */
+function pointInGoal(x: number, y: number): Side | null {
+  for (const g of GOALS) {
+    const past = (x - g.lineX) * g.dir >= 0
+    // Nota: el límite trasero es GOAL.depth exacto (sin margen extra) para no invadir la
+    // zona que la valla del fondo de la red ya bloquea físicamente (ver geometry.ts).
+    const withinDepth = Math.abs(x - g.lineX) <= GOAL.depth
+    if (past && withinDepth && y > g.yMin && y < g.yMax) return g.side
+  }
+  return null
+}
+
 function updatePuck(w: World, dt: number) {
   const p = w.puck
 
@@ -482,6 +532,8 @@ function updatePuck(w: World, dt: number) {
     if (!carrier) { p.carrierId = null }
     else {
       placeCarried(w, carrier)
+      const carriedGoal = pointInGoal(p.x, p.y)
+      if (carriedGoal !== null) { scoreGoal(w, carriedGoal); return }
       if (carrier.controlGrace <= 0) {
         for (const o of w.skaters) {
           if (o.side === carrier.side || o.pickupCooldown > 0) continue
@@ -524,7 +576,7 @@ function updatePuck(w: World, dt: number) {
     p.x += p.vx * h
     p.y += p.vy * h
 
-    const scored = checkGoalCrossing(ox, oy, p.x, p.y)
+    const scored = checkGoalCrossing(ox, oy, p.x, p.y) ?? pointInGoal(p.x, p.y)
     if (scored !== null) { scoreGoal(w, scored); return }
 
     // estáticos: vallas, postes, red
@@ -566,8 +618,9 @@ function updatePuck(w: World, dt: number) {
       }
     }
 
-    // patinadores: recoger o rebotar
-    let picked = false
+    // patinadores: recoger (el más cercano que pueda) o rebotar
+    let bestPicker: Skater | null = null
+    let bestDist = Infinity
     for (const s of w.skaters) {
       const dx = p.x - s.x
       const dy = p.y - s.y
@@ -577,15 +630,25 @@ function updatePuck(w: World, dt: number) {
       const rvx = p.vx - s.vx
       const rvy = p.vy - s.vy
       const rel = Math.hypot(rvx, rvy)
-      if (s.pickupCooldown <= 0 && rel <= SKATER.trapMaxRelSpeed) {
-        giveTo(w, s)
-        emit(w, { type: "pickup", id: s.id })
-        placeCarried(w, s)
-        picked = true
-        break
+      if (s.pickupCooldown <= 0 && rel <= SKATER.trapMaxRelSpeed && d < bestDist) {
+        bestPicker = s
+        bestDist = d
       }
+    }
+    if (bestPicker) {
+      giveTo(w, bestPicker)
+      emit(w, { type: "pickup", id: bestPicker.id })
+      placeCarried(w, bestPicker)
+      return
+    }
+    for (const s of w.skaters) {
+      const dx = p.x - s.x
+      const dy = p.y - s.y
+      const d = Math.hypot(dx, dy)
       const min = s.radius + p.radius
       if (d < min) {
+        const rvx = p.vx - s.vx
+        const rvy = p.vy - s.vy
         const nx = d > 1e-9 ? dx / d : 1
         const ny = d > 1e-9 ? dy / d : 0
         p.x = s.x + nx * (min + 1e-4)
@@ -601,6 +664,5 @@ function updatePuck(w: World, dt: number) {
         }
       }
     }
-    if (picked) return
   }
 }

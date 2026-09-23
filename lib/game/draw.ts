@@ -104,6 +104,13 @@ function drawGoals(ctx: CanvasRenderingContext2D) {
   }
 }
 
+const HAIR_PALETTE = ["#2b1a12", "#4a2f1d", "#0f0f0f", "#6b4423", "#caa472", "#3d2314", "#1c1712", "#8a5a2b"]
+function hairColor(id: string): string {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return HAIR_PALETTE[h % HAIR_PALETTE.length]
+}
+
 function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: string, alpha: number, controlled: boolean) {
   const x = lerp(s.px, s.x, alpha)
   const y = lerp(s.py, s.y, alpha)
@@ -127,13 +134,30 @@ function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: string, alp
   ctx.strokeStyle = "rgba(0,0,0,0.55)"
   ctx.lineWidth = 0.06
   ctx.stroke()
-  // cabeza estilo Funko: cara y "casco" del color del equipo, mirando hacia donde va
+  // cabeza estilo Funko: en patines NO se usa casco (solo el arquero), así que se ve la
+  // cara y, en la parte de atrás de la cabeza, el pelo (visto desde arriba).
   ctx.rotate(s.heading)
   const hr = r * 0.74
   ctx.fillStyle = "#ffdfc4"
   ctx.beginPath(); ctx.arc(r * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
-  ctx.fillStyle = color
+  const hc = hairColor(s.id)
+  ctx.fillStyle = hc
   ctx.beginPath(); ctx.arc(-r * 0.05, 0, hr * 0.9, Math.PI * 0.55, Math.PI * 1.45); ctx.fill()
+  // mechones sueltos: un par de puntas que asoman sobre el borde del pelo (lectura de "pelo", no de casco liso)
+  ctx.fillStyle = hc
+  for (const t of [-0.78, -0.62, 0.62, 0.78]) {
+    const a = Math.PI * (1 + t)
+    const bx = Math.cos(a) * hr * 0.88 - r * 0.05
+    const by = Math.sin(a) * hr * 0.88
+    const tx = Math.cos(a) * hr * 1.18 - r * 0.05
+    const ty = Math.sin(a) * hr * 1.18
+    ctx.beginPath()
+    ctx.moveTo(bx, by)
+    ctx.lineTo(tx, ty)
+    ctx.lineTo(Math.cos(a + 0.18) * hr * 0.82 - r * 0.05, Math.sin(a + 0.18) * hr * 0.82)
+    ctx.closePath()
+    ctx.fill()
+  }
   ctx.fillStyle = "#000"
   ctx.beginPath()
   ctx.arc(r * 0.42, -r * 0.24, r * 0.1, 0, Math.PI * 2)
@@ -183,20 +207,53 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   ctx.fillStyle = "rgba(0,0,0,0.35)"
   ctx.beginPath(); ctx.ellipse(pxp + 0.04, pyp + 0.08, pr * 1.05, pr * 0.85, 0, 0, Math.PI * 2); ctx.fill()
 
-  // porteros
+  // porteros: el ÚNICO que usa casco y protecciones en hockey sobre patines
   for (const g of w.goalies) {
     const gx = lerp(g.px, g.x, alpha)
     const gy = lerp(g.py, g.y, alpha)
     const c = o.colors[g.side]
+    const facing = g.side === 0 ? 0 : Math.PI // side 0 mira hacia +x (su red queda a la izquierda), side 1 hacia -x
+    ctx.save()
+    ctx.translate(gx, gy)
+    // sombra
     ctx.fillStyle = "rgba(0,0,0,0.35)"
-    ctx.beginPath(); ctx.ellipse(gx + 0.05, gy + 0.1, g.radius * 1.05, g.radius * 0.9, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(0.05, 0.1, g.radius * 1.05, g.radius * 0.9, 0, 0, Math.PI * 2); ctx.fill()
+    // peto/cuerpo (color de equipo, más voluminoso que un patinador: ya lo transmite el radio)
     ctx.fillStyle = c
-    ctx.beginPath(); ctx.arc(gx, gy, g.radius, 0, Math.PI * 2); ctx.fill()
-    ctx.fillStyle = "#e5e7eb"
-    ctx.fillRect(gx - g.radius * 0.85, gy - g.radius * 0.28, g.radius * 1.7, g.radius * 0.56)
+    ctx.beginPath(); ctx.arc(0, 0, g.radius, 0, Math.PI * 2); ctx.fill()
     ctx.strokeStyle = "rgba(0,0,0,0.6)"
     ctx.lineWidth = 0.06
-    ctx.beginPath(); ctx.arc(gx, gy, g.radius, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath(); ctx.arc(0, 0, g.radius, 0, Math.PI * 2); ctx.stroke()
+    // hombreras: dos almohadillas claras a los lados, para que se lea "equipado"
+    ctx.fillStyle = "rgba(230,233,238,0.95)"
+    ctx.beginPath(); ctx.ellipse(0, -g.radius * 0.8, g.radius * 0.36, g.radius * 0.24, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(0, g.radius * 0.8, g.radius * 0.36, g.radius * 0.24, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.strokeStyle = "rgba(0,0,0,0.35)"
+    ctx.lineWidth = 0.03
+    ctx.stroke()
+    // casco: cúpula rígida que cubre toda la cabeza, con rejilla/máscara al frente
+    ctx.rotate(facing)
+    const hr = g.radius * 0.62
+    ctx.fillStyle = "#e7eaef"
+    ctx.beginPath(); ctx.arc(g.radius * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
+    ctx.strokeStyle = "rgba(0,0,0,0.55)"
+    ctx.lineWidth = 0.045
+    ctx.stroke()
+    // banda de color del equipo en el casco
+    ctx.strokeStyle = c
+    ctx.lineWidth = hr * 0.28
+    ctx.beginPath(); ctx.arc(g.radius * 0.08, 0, hr * 0.78, Math.PI * 0.82, Math.PI * 1.18); ctx.stroke()
+    // rejilla de la máscara sobre la cara
+    ctx.strokeStyle = "rgba(20,20,20,0.7)"
+    ctx.lineWidth = 0.035
+    for (const t of [-0.5, 0, 0.5]) {
+      ctx.beginPath()
+      ctx.moveTo(g.radius * 0.08 + hr * 0.1, hr * t)
+      ctx.lineTo(g.radius * 0.08 + hr * 0.98, hr * t)
+      ctx.stroke()
+    }
+    ctx.rotate(-facing)
+    ctx.restore()
   }
 
   for (const s of w.skaters) drawSkater(ctx, s, o.colors[s.side], alpha, s.id === o.controlledId)

@@ -85,7 +85,7 @@ test("storage: ida y vuelta conserva equipos y ajustes", () => {
   const t = makeTeam(draft({ name: "Lobos" }), DEFAULT_TEAMS)
   assert.ok("team" in t)
   if (!("team" in t)) return
-  const saved: Saved = { customTeams: [t.team], settings: { ...DEFAULT_SETTINGS, nivel: "dificil", duration: 180, localId: t.team.id, visitId: "t3", leftHanded: true, sound: false } }
+  const saved: Saved = { customTeams: [t.team], settings: { ...DEFAULT_SETTINGS, nivel: "dificil", duration: 180, localId: t.team.id, visitId: "t3", leftHanded: true, sound: false }, cup: null }
   assert.ok(save(saved, s))
   const back = load(s)
   assert.equal(back.customTeams.length, 1)
@@ -106,7 +106,7 @@ test("storage: JSON roto, tipos raros o storage nulo => valores por defecto, sin
   assert.equal(l.settings.nivel, "normal")
   assert.equal(l.settings.duration, 120)
   assert.deepEqual(load(null).settings, DEFAULT_SETTINGS)
-  assert.equal(save({ customTeams: [], settings: DEFAULT_SETTINGS }, null), false)
+  assert.equal(save({ customTeams: [], settings: DEFAULT_SETTINGS, cup: null }, null), false)
 })
 
 test("storage: ids repetidos, nombres que chocan con los de fábrica y tope de equipos", () => {

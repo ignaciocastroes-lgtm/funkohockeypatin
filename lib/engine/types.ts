@@ -1,7 +1,7 @@
 export type Surface = "madera" | "cemento" | "sintetico"
 export type SkaterKind = "equilibrado" | "pesado" | "veloz"
 export type Side = 0 | 1
-export type Phase = "play" | "goal" | "ended"
+export type Phase = "play" | "timeOn" | "goal" | "ended"
 
 /** Lado 0 = local (defiende la portería izquierda, ataca hacia +x). Lado 1 = visita. */
 export interface Skater {

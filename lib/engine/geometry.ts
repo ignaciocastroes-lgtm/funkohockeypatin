@@ -106,11 +106,18 @@ export function segmentContact(
   return { nx: dx / d, ny: dy / d, pen: R - d, kind }
 }
 
+/** Radio (m) de la "zona de crease" frente a cada portería en la que ningún patinador puede pararse:
+ *  obliga a tirar desde fuera, no a quemarropa parado en la boca del arco. El portero NO se ve
+ *  afectado (vive dentro de esa zona a propósito). */
+export const CREASE_RADIUS = 1.75
+
 /**
  * Reúne los contactos estáticos (vallas, postes, red) de un círculo.
  * `solidMouth`: true para patinadores/porteros (no pueden entrar a la red); false para el puck.
+ * `creaseBlock`: true SOLO para patinadores (no porteros): además, no pueden pararse dentro
+ * del semicírculo de la portería (evita el tiro a quemarropa parado en la boca del arco).
  */
-export function collectContacts(x: number, y: number, r: number, solidMouth: boolean, out: Contact[]): Contact[] {
+export function collectContacts(x: number, y: number, r: number, solidMouth: boolean, out: Contact[], creaseBlock = false): Contact[] {
   out.length = 0
   const b = boardContact(x, y, r)
   if (b) out.push(b)
@@ -129,6 +136,10 @@ export function collectContacts(x: number, y: number, r: number, solidMouth: boo
     if (c) out.push(c)
     if (solidMouth) {
       c = segmentContact(x, y, r, g.lineX, g.yMin, g.lineX, g.yMax, th, "net")
+      if (c) out.push(c)
+    }
+    if (creaseBlock) {
+      c = circleContact(x, y, r, g.lineX, g.cy, CREASE_RADIUS, "net")
       if (c) out.push(c)
     }
   }

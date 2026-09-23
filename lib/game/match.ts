@@ -18,6 +18,8 @@ import {
 import type { ActionEvent } from "./input"
 import type { SkaterKind, Side, Surface, World } from "../engine"
 import { drawHud, drawScene } from "./draw"
+import { Confetti, ReplayBuffer, drawFlash, replayFrameAt, replayWorld } from "./effects"
+import type { Flash, GoalReplay } from "./effects"
 import { TouchInput } from "./input"
 import { Sfx } from "./sfx"
 
@@ -97,6 +99,10 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded })
   const sfx = new Sfx()
   sfx.muted = o.sound === false
+  const confetti = new Confetti()
+  const replayBuf = new ReplayBuffer(2.4)
+  let flash: Flash | null = null
+  let goalReplay: GoalReplay | null = null
   const stats = { frames: 0, steps: 0, controlledId: null as string | null }
   const result: MatchResult = { score: [0, 0], fouls: [0, 0], steals: [0, 0], passes: [0, 0], shots: [0, 0] }
 
@@ -254,6 +260,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         stepWorld(world, fixed)
         stepsThisFrame++
         stats.steps++
+        if (world.phase === "play" || world.phase === "timeOn") replayBuf.push(world)
         if (world.events.length) {
           for (const ev of drainEvents(world)) {
             countEvent(ev)
@@ -261,8 +268,14 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
             if (ev.type === "foul") {
               banner = { text: `¡FALTA! Tarjeta azul ${names[ev.side]} #${ev.id.slice(1)}`, until: now + 1900 }
               navigator.vibrate?.(60)
-            } else if (ev.type === "goal") navigator.vibrate?.(120)
-            else if (ev.type === "end" && !ended) {
+            } else if (ev.type === "goal") {
+              navigator.vibrate?.(120)
+              flash = { color: colors[ev.side], startedAt: now, durationMs: 220 }
+              const conceded = GOALS[ev.side === 0 ? 1 : 0]
+              const scr = cam.toScreen(conceded.lineX, conceded.cy)
+              confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffd23f", "#ffffff"], 110)
+              goalReplay = { frames: replayBuf.freeze(), scorerSide: ev.side, startedAt: now, speed: 0.55 }
+            } else if (ev.type === "end" && !ended) {
               ended = true
               releaseFingers()
               result.score = [world.score[0], world.score[1]]
@@ -277,9 +290,26 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
 
     cam.update(dt, world, controlledId, cssW, cssH)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    const opts = { controlledId, colors, names, alpha, fontFamily: FONT }
-    drawScene(ctx, world, cam, opts)
-    drawHud(ctx, world, cam, opts)
+
+    // Gol: mientras dura la pausa de festejo, se reproduce en cámara lenta lo que pasó
+    // justo antes (en vez de la escena congelada). Si ya salimos de esa fase, se corta.
+    let sceneWorld: World = world
+    let sceneAlpha = alpha
+    if (goalReplay && world.phase === "goal") {
+      const rf = replayFrameAt(goalReplay, now)
+      if (rf) { sceneWorld = replayWorld(world, rf.prev, rf.curr); sceneAlpha = rf.alpha }
+    } else if (goalReplay) {
+      goalReplay = null
+    }
+    const opts = { controlledId, colors, names, alpha: sceneAlpha, fontFamily: FONT }
+    drawScene(ctx, sceneWorld, cam, opts)
+    if (flash) {
+      drawFlash(ctx, flash, now, cssW, cssH)
+      if (now - flash.startedAt > flash.durationMs) flash = null
+    }
+    confetti.update(dt)
+    confetti.draw(ctx, cssW, cssH)
+    drawHud(ctx, world, cam, { ...opts, alpha })
     drawTouchOverlay(ctx, world, cam, input, controlledId)
     if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
     if (portrait) drawRotateHint(ctx, cssW, cssH)

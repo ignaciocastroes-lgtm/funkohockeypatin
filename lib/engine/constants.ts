@@ -115,8 +115,14 @@ export const GOALIE = {
   shotSpeed: 6,
   /** Recorrido lateral máximo del centro del portero desde el centro de la boca (m). */
   range: 0.75,
-  /** Distancia de la línea de gol hacia el interior de la pista donde se para. */
+  /** Distancia de la línea de gol hacia el interior de la pista donde se para por defecto. */
   standoff: 0.85,
+  /** Cuánto más puede salir (además del standoff) a cerrarle el ángulo a un atacante que se acerca (m). */
+  advanceMax: 0.55,
+  /** Distancia (m) del puck a la línea desde la que el portero empieza a adelantarse. */
+  advanceRange: 9,
+  /** Velocidad (m/s) con la que el portero avanza/retrocede en su eje de profundidad. */
+  advanceSpeed: 3.2,
 } as const
 
 /**
@@ -139,6 +145,9 @@ export const MATCH = {
   /** Duración por defecto de un partido (s). */
   duration: 300,
   goalPause: 2.2,
+  /** Cuando el reloj llega a 0 con el puck suelto o volando, se concede este tiempo de gracia
+   *  antes de pitar el final, para que una jugada ya en marcha (un tiro, un rebote) pueda terminar. */
+  timeOnGrace: 1.5,
 } as const
 
 export const CAMERA = {

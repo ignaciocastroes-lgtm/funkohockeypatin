@@ -8,6 +8,8 @@ import {
   defaultRoster, distinctColors, makeTeam,
 } from "./teams"
 import type { Team, TeamDraft } from "./teams"
+import { newCup, nextMatch, recordResult } from "./cup"
+import type { Cup, CupMatch, MatchSlot } from "./cup"
 import type { SkaterKind, Surface } from "../engine"
 
 /**
@@ -29,7 +31,7 @@ export interface AppHandle {
   readonly debug: { screen: () => string; match: () => MatchHandle | null; saved: () => Saved }
 }
 
-type Screen = "menu" | "setup" | "editor" | "credits" | "match"
+type Screen = "menu" | "setup" | "editor" | "credits" | "match" | "cup"
 type Child = Node | string | null | undefined | false
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...kids: Child[]): HTMLElementTagNameMap[K] {
@@ -94,6 +96,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       : screen === "setup" ? setupScreen()
       : screen === "editor" ? editorScreen()
       : screen === "credits" ? creditsScreen()
+      : screen === "cup" ? cupScreen()
       : null
     if (next) {
       view.replaceChildren(next)
@@ -134,6 +137,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         h("button", { class: "fp-btn solid", "data-key": "play", onclick: () => startMatch() }, "Jugar partido"),
         h("p", { class: "fp-summary" }, `${local.name} vs ${visit.name} · ${fmtDur(opts.durationOverride ?? s.duration)} · ${NIVEL_LABEL[s.nivel]}`),
         h("button", { class: "fp-btn cy", "data-key": "setup", onclick: () => go("setup") }, "Equipos y ajustes"),
+        h("button", { class: "fp-btn ye", "data-key": "cup", onclick: () => go("cup") }, saved.cup ? "Copa (en curso)" : "Copa"),
         h("button", { class: "fp-btn ye", "data-key": "new", onclick: () => openEditor(null) }, "Crear equipo"),
         h("button", { class: "fp-btn te", "data-key": "credits", onclick: () => go("credits") }, "Créditos"),
       ),
@@ -360,10 +364,10 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   // ---------- partido ----------
-  function matchOptions(): Pick<MatchOptions, "teams" | "surface" | "nivel" | "duration" | "leftHanded" | "sound" | "debug"> {
+  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "nivel" | "duration" | "leftHanded" | "sound" | "debug"> {
     const s = saved.settings
-    const local = teamById(s.localId)
-    const visit = teamById(s.visitId)
+    const local = teamById(localId)
+    const visit = teamById(visitId)
     const [lc, vc] = distinctColors(local.color, visit.color)
     const mk = (t: Team, color: string) => ({ name: t.name, color, kinds: t.roster.map((p) => p.kind), names: t.roster.map((p) => p.name) })
     return {
@@ -376,12 +380,32 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       debug: opts.debug,
     }
   }
+  function matchOptions() { return teamMatchOptions(saved.settings.localId, saved.settings.visitId) }
 
   function stopMatch() {
     if (endTimer !== undefined) { window.clearTimeout(endTimer); endTimer = undefined }
     closeDialog()
     match?.destroy()
     match = null
+    cupPlaying = null
+  }
+
+  /** Barra fija de controles (pausa / pantalla completa / sonido) sobre el partido en curso. */
+  function matchHudBar(wrap: HTMLElement, m: MatchHandle): HTMLElement {
+    return h("div", { class: "fp-hud" },
+      h("button", { class: "fp-btn", "aria-label": "Pausa", "data-key": "pause", onclick: () => showPause(wrap) }, "❚❚"),
+      canFullscreen() ? h("button", { class: "fp-btn", "aria-label": "Pantalla completa", "data-key": "fs", onclick: toggleFullscreen }, "⛶") : null,
+      h("button", { class: "fp-btn", "aria-label": saved.settings.sound ? "Silenciar" : "Activar sonido", "data-key": "snd", "aria-pressed": String(saved.settings.sound),
+        onclick: (e: Event) => {
+          saved.settings.sound = !saved.settings.sound
+          m.setSound(saved.settings.sound)
+          const b = e.currentTarget as HTMLElement
+          b.textContent = saved.settings.sound ? "🔊" : "🔇"
+          b.setAttribute("aria-label", saved.settings.sound ? "Silenciar" : "Activar sonido")
+          b.setAttribute("aria-pressed", String(saved.settings.sound))
+          persist()
+        } }, saved.settings.sound ? "🔊" : "🔇"),
+    )
   }
 
   function startMatch() {
@@ -401,22 +425,166 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       onAutoPause: () => showPause(wrap),
     })
     match = m
+    wrap.append(matchHudBar(wrap, m))
+  }
 
-    const bar = h("div", { class: "fp-hud" },
-      h("button", { class: "fp-btn", "aria-label": "Pausa", "data-key": "pause", onclick: () => showPause(wrap) }, "❚❚"),
-      canFullscreen() ? h("button", { class: "fp-btn", "aria-label": "Pantalla completa", "data-key": "fs", onclick: toggleFullscreen }, "⛶") : null,
-      h("button", { class: "fp-btn", "aria-label": saved.settings.sound ? "Silenciar" : "Activar sonido", "data-key": "snd", "aria-pressed": String(saved.settings.sound),
-        onclick: (e: Event) => {
-          saved.settings.sound = !saved.settings.sound
-          m.setSound(saved.settings.sound)
-          const b = e.currentTarget as HTMLElement
-          b.textContent = saved.settings.sound ? "🔊" : "🔇"
-          b.setAttribute("aria-label", saved.settings.sound ? "Silenciar" : "Activar sonido")
-          b.setAttribute("aria-pressed", String(saved.settings.sound))
-          persist()
-        } }, saved.settings.sound ? "🔊" : "🔇"),
+  // ---------- copa ----------
+  /** Equipos elegidos en la pantalla de armado de la Copa (no persiste hasta sortear). */
+  let cupPick: string[] = allTeams(saved).slice(0, 4).map((t) => t.id)
+  /** Qué cruce de la Copa se está jugando ahora mismo, si hay uno. */
+  let cupPlaying: { which: MatchSlot; home: string; away: string } | null = null
+
+  function shuffled<T>(arr: T[]): T[] {
+    const a = [...arr]
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[a[i], a[j]] = [a[j], a[i]]
+    }
+    return a
+  }
+
+  function toggleCupPick(id: string) {
+    if (cupPick.includes(id)) cupPick = cupPick.filter((x) => x !== id)
+    else if (cupPick.length < 4) cupPick = [...cupPick, id]
+    render()
+  }
+
+  function startCupMatch(which: MatchSlot, home: string, away: string) {
+    stopMatch()
+    cupPlaying = { which, home, away }
+    screen = "match"
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = teamMatchOptions(home, away)
+    const m = mountMatch(wrap, {
+      ...mo,
+      onEnd: (r) => {
+        const pb = wrap.querySelector<HTMLButtonElement>('[data-key="pause"]')
+        if (pb) { pb.disabled = true; pb.setAttribute("aria-disabled", "true") }
+        endTimer = window.setTimeout(() => showCupEnd(wrap, r), 1600)
+      },
+      onAutoPause: () => showPause(wrap),
+    })
+    match = m
+    wrap.append(matchHudBar(wrap, m))
+  }
+
+  function showCupEnd(wrap: HTMLElement, r: MatchResult) {
+    if (!match || destroyed || !cupPlaying || !saved.cup) return
+    closeDialog()
+    const { which, home, away } = cupPlaying
+    const homeT = teamById(home)
+    const awayT = teamById(away)
+    const [lc, vc] = distinctColors(homeT.color, awayT.color)
+    const { cup: after, drawn } = recordResult(saved.cup, which, r.score)
+
+    if (drawn) {
+      const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Empate", style: "max-width:520px" },
+        h("p", { class: "fp-result fp-arcade" }, "¡EMPATE!"),
+        h("div", { class: "fp-score" }, h("span", { style: `color:${lc}` }, String(r.score[0])), h("span", { style: "font-size:.6em;opacity:.7" }, "-"), h("span", { style: `color:${vc}` }, String(r.score[1]))),
+        h("p", { style: "margin:0;text-align:center;color:rgba(255,255,255,.8);font-size:14px" }, "En la Copa no hay empates: hay que definirlo."),
+        h("div", { class: "fp-row" },
+          h("button", { class: "fp-btn solid", "data-key": "replay", onclick: () => startCupMatch(which, home, away) }, "Jugar de nuevo"),
+          h("button", { class: "fp-btn gr", "data-key": "cup", onclick: () => { stopMatch(); go("cup") } }, "Ver llave"),
+        ),
+      )
+      openModal(wrap, h("div", { class: "fp-overlay" }, box))
+      return
+    }
+
+    saved.cup = after
+    persist()
+    const winnerId = r.score[0] > r.score[1] ? home : away
+    const winnerT = teamById(winnerId)
+    const champion = after.championId
+    const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Fin del partido de Copa", style: "max-width:520px" },
+      h("p", { class: "fp-result fp-arcade", style: "color:#facc15" }, champion ? "¡CAMPEÓN!" : "AVANZA"),
+      h("div", { class: "fp-score" }, h("span", { style: `color:${lc}` }, String(r.score[0])), h("span", { style: "font-size:.6em;opacity:.7" }, "-"), h("span", { style: `color:${vc}` }, String(r.score[1]))),
+      h("p", { style: "margin:0;text-align:center;font-size:14px" }, champion ? `${teamById(champion).name} se queda con la Copa.` : `${winnerT.name} pasa a la siguiente ronda.`),
+      h("div", { class: "fp-row" },
+        h("button", { class: "fp-btn solid", "data-key": "cup", onclick: () => { stopMatch(); go("cup") } }, champion ? "Ver Copa" : "Siguiente partido"),
+        h("button", { class: "fp-btn gr", "data-key": "menu", onclick: () => { stopMatch(); go("menu") } }, "Menú"),
+      ),
     )
-    wrap.append(bar)
+    openModal(wrap, h("div", { class: "fp-overlay" }, box))
+  }
+
+  function cupMatchRow(label: string, m: CupMatch): HTMLElement {
+    const home = m.home ? teamById(m.home) : null
+    const away = m.away ? teamById(m.away) : null
+    return h("section", { class: "fp-panel", style: "display:flex;flex-direction:column;gap:8px" },
+      h("h4", { style: "margin:0;opacity:.75;font-size:12px;letter-spacing:.08em" }, label),
+      h("div", { style: "display:flex;justify-content:space-between;align-items:center;gap:10px" },
+        h("b", { style: `color:${home?.color ?? "#9ca3af"}` }, home?.name ?? "?"),
+        h("span", { style: "opacity:.8;font-size:13px" }, m.played && m.score ? `${m.score[0]} - ${m.score[1]}` : "vs"),
+        h("b", { style: `color:${away?.color ?? "#9ca3af"}` }, away?.name ?? "?"),
+      ),
+    )
+  }
+
+  function cupSetupScreen(): HTMLElement {
+    const teams = allTeams(saved)
+    return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
+      topBar("COPA", "#facc15", () => go("menu")),
+      h("section", { class: "fp-panel" },
+        h("h3", {}, `Elige 4 equipos (${cupPick.length}/4)`),
+        h("p", { class: "fp-note" }, "Eliminación directa: dos semifinales y una final. El sorteo de cruces es al azar."),
+        h("div", { class: "fp-grid", role: "group", "aria-label": "Equipos de la copa" },
+          ...teams.map((t) => h("button", {
+            type: "button", role: "checkbox", class: "fp-chip", style: `--tc:${t.color}`,
+            "aria-checked": String(cupPick.includes(t.id)),
+            "data-key": `pick-${t.id}`,
+            onclick: () => toggleCupPick(t.id),
+          },
+            h("span", { class: "fp-dot", style: `background:${t.color}` }),
+            h("span", { class: "fp-meta" }, h("b", {}, t.name)),
+          )),
+        ),
+      ),
+      h("div", { class: "fp-sticky" },
+        h("button", {
+          class: "fp-btn solid", "data-key": "start-cup", disabled: cupPick.length !== 4,
+          onclick: () => {
+            if (cupPick.length !== 4) return
+            const ids = shuffled(cupPick) as [string, string, string, string]
+            saved.cup = newCup(ids)
+            persist()
+            render()
+          },
+        }, "Sortear y empezar Copa"),
+      ),
+    ))
+  }
+
+  function cupBracketScreen(cup: Cup): HTMLElement {
+    const nm = nextMatch(cup)
+    return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
+      topBar("COPA", "#facc15", () => go("menu")),
+      cupMatchRow("Semifinal 1", cup.semis[0]),
+      cupMatchRow("Semifinal 2", cup.semis[1]),
+      cupMatchRow("Final", cup.final),
+      cup.championId ? h("section", { class: "fp-panel", style: "text-align:center" },
+        h("p", { class: "fp-result fp-arcade", style: "color:#facc15;margin:0" }, "¡CAMPEÓN!"),
+        h("p", { style: `margin:4px 0 0;color:${teamById(cup.championId).color};font-weight:700` }, teamById(cup.championId).name),
+      ) : null,
+      h("div", { class: "fp-sticky" },
+        nm
+          ? h("button", { class: "fp-btn solid", "data-key": "play-cup", onclick: () => startCupMatch(nm.which, nm.home, nm.away) },
+              `Jugar: ${teamById(nm.home).name} vs ${teamById(nm.away).name}`)
+          : h("button", { class: "fp-btn solid", "data-key": "new-cup", onclick: () => { saved.cup = null; persist(); render() } }, "Nueva Copa"),
+        cup.championId ? null : h("button", {
+          class: "fp-btn rd", "data-key": "cancel-cup",
+          onclick: () => showDialog("¿Cancelar la Copa?", "Se pierde el progreso del torneo.", [
+            { label: "Cancelar Copa", danger: true, onClick: () => { saved.cup = null; persist(); render() } },
+            { label: "Seguir" },
+          ]),
+        }, "Cancelar Copa"),
+      ),
+    ))
+  }
+
+  function cupScreen(): HTMLElement {
+    return saved.cup ? cupBracketScreen(saved.cup) : cupSetupScreen()
   }
 
   function canFullscreen(): boolean {
@@ -434,17 +602,18 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     match.pause()
     closeDialog()
     const back = () => { closeDialog(); match?.resume() }
+    const cp = cupPlaying
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Pausa" },
       h("h2", { class: "fp-arcade" }, "PAUSA"),
       h("button", { class: "fp-btn solid", "data-key": "resume", onclick: back }, "Continuar"),
       h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
-        { label: "Reiniciar", danger: true, onClick: () => startMatch() },
+        { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
         { label: "Cancelar", onClick: () => showPause(wrap) },
       ], wrap) }, "Reiniciar partido"),
-      h("button", { class: "fp-btn rd", "data-key": "quit", onclick: () => showDialog("¿Salir al menú?", "Se pierde el partido en curso.", [
-        { label: "Salir", danger: true, onClick: () => { stopMatch(); go("menu") } },
+      h("button", { class: "fp-btn rd", "data-key": "quit", onclick: () => showDialog(cp ? "¿Salir a la Copa?" : "¿Salir al menú?", "Se pierde el partido en curso.", [
+        { label: "Salir", danger: true, onClick: () => { stopMatch(); go(cp ? "cup" : "menu") } },
         { label: "Cancelar", onClick: () => showPause(wrap) },
-      ], wrap) }, "Salir al menú"),
+      ], wrap) }, cp ? "Salir a la Copa" : "Salir al menú"),
     )
     openModal(wrap, h("div", { class: "fp-overlay" }, box))
   }
@@ -481,7 +650,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       const wrap = view.querySelector<HTMLElement>(".fp-match")
       if (!wrap || !match || match.ended) return
       if (dialog && match.paused) { closeDialog(); match.resume() } else showPause(wrap)
-    } else if (screen === "setup" || screen === "credits") go("menu")
+    } else if (screen === "setup" || screen === "credits" || screen === "cup") go("menu")
     else if (screen === "editor") go(editing ? "setup" : "menu")
   }
   document.addEventListener("keydown", onKey)
