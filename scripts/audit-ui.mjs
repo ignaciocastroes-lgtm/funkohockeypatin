@@ -4,21 +4,10 @@
 //
 // Uso (una vez):  pnpm add -D playwright && pnpm exec playwright install chromium
 //                 pnpm audit:ui
-import { execSync } from "node:child_process"
-import { createRequire } from "node:module"
-import { dirname, join, resolve } from "node:path"
-import { tmpdir } from "node:os"
+import { bootToMenu, buildStandalone, loadPlaywright } from "./e2e-lib.mjs"
 
-const require = createRequire(import.meta.url)
-const root = resolve(dirname(new URL(import.meta.url).pathname), "..")
-let chromium
-try { ({ chromium } = require("playwright")) } catch {
-  console.error("Falta playwright: pnpm add -D playwright && pnpm exec playwright install chromium")
-  process.exit(2)
-}
-
-const html = join(tmpdir(), "funko-patin-audit.html")
-execSync(`node scripts/build-standalone.mjs ${JSON.stringify(html)}`, { cwd: root, stdio: "pipe" })
+const { chromium } = loadPlaywright()
+const html = buildStandalone("funko-patin-audit.html")
 const PAGE_URL = `file://${html}?time=6`
 
 const VIEWS = [[844, 390], [667, 375], [568, 320], [390, 844], [320, 568], [1024, 768], [1440, 900]]
@@ -75,8 +64,20 @@ for (const [w, h] of VIEWS) {
   }
   // los diálogos entran con un fundido de 250 ms: se espera a que terminen para medir
   const settle = () => page.waitForTimeout(400)
-  await page.goto(PAGE_URL); await page.waitForTimeout(200)
+  // la app SIEMPRE abre en el demo: se toca para llegar al menú (y se verifica que ese camino funcione)
+  const boot = await bootToMenu(page, PAGE_URL)
+  if (!boot.demoOk) findings.push({ vp: `${w}x${h}`, label: "arranque", name: "(demo)", issues: ["la app no abrió en el demo"] })
+  if (!boot.menuOk) findings.push({ vp: `${w}x${h}`, label: "arranque", name: "(demo)", issues: ["tocar el demo no llevó al menú"] })
   await audit("menú")
+  // el mismo menú con el modo entrenamiento DESBLOQUEADO (un botón más): antes desbordaba en pantallas bajas
+  await K("setup").click()
+  await page.keyboard.down("Shift")
+  for (const d of ["0", "1", "7", "8", "9"]) await page.keyboard.press(`Digit${d}`)
+  await page.keyboard.up("Shift"); await page.waitForTimeout(500)
+  await page.locator(".fp-dialog button").first().click().catch(() => {})
+  await page.waitForTimeout(400)
+  await K("back").click(); await page.waitForTimeout(300)
+  await audit("menú con entrenamiento desbloqueado")
   await K("setup").click(); await audit("ajustes")
   await K("new").click(); await audit("editor")
   await page.fill("#fp-name", "Lobos"); await K("save").click(); await audit("ajustes con equipo propio")
@@ -84,7 +85,17 @@ for (const [w, h] of VIEWS) {
   await K(`del-${cid}`).click(); await settle(); await audit("diálogo borrar"); await trapped("diálogo borrar")
   await page.locator('.fp-dialog [data-key="dlg-1"]').click()
   await K("back").click(); await K("credits").click(); await audit("créditos")
-  await K("back").click(); await K("play").click(); await page.waitForTimeout(500); await audit("partido")
+  await K("back").click()
+  if (w >= h) { // el tutorial de la Copa (en vertical el partido se congela y pide girar el teléfono)
+    await K("cup").click(); await K("start-cup").click(); await K("play-cup").click(); await page.waitForTimeout(1500)
+    await audit("Copa: tutorial"); await trapped("Copa: tutorial")
+    await K("tutorial-ok").click(); await page.waitForTimeout(300); await audit("Copa: partido")
+    await K("pause").click(); await settle(); await K("quit").click(); await settle()
+    await page.locator('.fp-dialog [data-key="dlg-0"]').click(); await settle()
+    await K("cancel-cup").click(); await settle(); await page.locator('.fp-dialog [data-key="dlg-0"]').click(); await settle()
+    await K("back").click(); await settle()
+  }
+  await K("play").click(); await page.waitForTimeout(500); await audit("partido")
   await K("pause").click(); await settle(); await audit("pausa"); await trapped("pausa")
   await K("quit").click(); await settle(); await audit("confirmar salir")
   await page.locator('.fp-dialog [data-key="dlg-1"]').click(); await K("resume").click()

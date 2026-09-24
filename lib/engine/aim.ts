@@ -115,3 +115,22 @@ export function bestPassTarget(w: World, shooterId: string): string | null {
   }
   return best
 }
+
+/**
+ * Pase de un dedo: dado un punto del mundo (donde tocó el dedo), devuelve el compañero al que se le
+ * quiere pasar, o null. Decide el jugador MÁS CERCANO al punto (de cualquier equipo, salvo el
+ * portador): si ese es un compañero y está dentro de `radius` m, es el receptor. Si el más cercano es
+ * un rival, no se pasa a nadie — tocar a un rival no debe regalarle la pelota a un compañero que
+ * casualmente esté cerca.
+ */
+export function teammateAtPoint(w: World, carrierId: string, wx: number, wy: number, radius: number): string | null {
+  const carrier = w.skaters.find((k) => k.id === carrierId)
+  if (!carrier) return null
+  let best: { id: string; side: number; d: number } | null = null
+  for (const k of w.skaters) {
+    if (k.id === carrierId) continue
+    const d = Math.hypot(k.x - wx, k.y - wy)
+    if (!best || d < best.d) best = { id: k.id, side: k.side, d }
+  }
+  return best && best.side === carrier.side && best.d <= radius ? best.id : null
+}

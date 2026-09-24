@@ -6,6 +6,10 @@
  *      · La dirección del deslizamiento es la dirección del pase/tiro.
  *      · La velocidad del deslizamiento es la potencia (suave = pase, latigazo = tiro).
  *      · Un toque sin deslizar = pase automático al mejor compañero.
+ *  - PASE DE UN DEDO: un toque rápido (corto, sin arrastrar) con CUALQUIER dedo, incluido el de
+ *    movimiento, es un `tap` con su posición en pantalla. Si cae sobre un compañero (o sobre su flecha
+ *    de borde), el pase va a ese compañero. El toque del dedo de movimiento es `strict`: si no cae
+ *    sobre un compañero no hace nada (así un toquecito para arrancar no regala la pelota).
  *
  * Los roles se asignan por zona; si la zona de un rol está ocupada por otro dedo,
  * el dedo toma el rol que esté libre (así funciona también con una sola mano).
@@ -13,7 +17,47 @@
 
 export type ActionEvent =
   | { kind: "flick"; angle: number; vhPerSec: number }
-  | { kind: "tap" }
+  | {
+      kind: "tap"
+      /** Dónde tocó (px de pantalla). Ausente si viene del teclado (Espacio). */
+      x?: number
+      y?: number
+      /** true = vino del dedo de movimiento: solo vale si cae sobre un compañero. */
+      strict?: boolean
+    }
+
+/** Teclas de movimiento en escritorio: WASD y flechas, cualquiera de las dos funciona. */
+const MOVE_KEYS: Record<string, [number, number]> = {
+  KeyW: [0, -1], ArrowUp: [0, -1],
+  KeyS: [0, 1], ArrowDown: [0, 1],
+  KeyA: [-1, 0], ArrowLeft: [-1, 0],
+  KeyD: [1, 0], ArrowRight: [1, 0],
+}
+
+/** Vector de movimiento (normalizado) a partir del set de `KeyboardEvent.code` apretados ahora mismo. */
+export function keyboardVector(pressed: ReadonlySet<string>): { x: number; y: number } {
+  let x = 0
+  let y = 0
+  for (const code of pressed) {
+    const v = MOVE_KEYS[code]
+    if (v) { x += v[0]; y += v[1] }
+  }
+  const m = Math.hypot(x, y)
+  return m > 1 ? { x: x / m, y: y / m } : { x, y }
+}
+
+/** Espacio = tiro/pase automático (el "toque" de un dedo), para tirar sin mouse. */
+export const isShootKey = (code: string): boolean => code === "Space"
+
+/**
+ * Dígito de una tecla física (fila de números o teclado numérico), o null si no es un dígito.
+ * Se lee de `e.code`, NO de `e.key`: con Shift apretado `e.key` trae el símbolo ("!" en vez de "1"),
+ * y el atajo secreto del entrenamiento (Shift + 0-1-7-8-9) usa justamente Shift.
+ */
+export function digitFromCode(code: string): string | null {
+  const m = /^(?:Digit|Numpad)([0-9])$/.exec(code)
+  return m ? m[1] : null
+}
 
 export interface TouchInputOptions {
   width: number
@@ -56,6 +100,11 @@ export class TouchInput {
   private startT = 0
   private startX = 0
   private startY = 0
+  // seguimiento del dedo de movimiento, para reconocer un toque rápido (pase de un dedo)
+  private mvT = 0
+  private mvX = 0
+  private mvY = 0
+  private mvMaxDist = 0
 
   constructor(o: TouchInputOptions) {
     this.width = o.width
@@ -84,6 +133,7 @@ export class TouchInput {
       this.stick = { ox: x, oy: y, cx: x, cy: y, radius: this.radius }
       this.moveX = 0
       this.moveY = 0
+      this.mvT = t; this.mvX = x; this.mvY = y; this.mvMaxDist = 0
     } else {
       this.startT = t
       this.startX = x
@@ -97,6 +147,7 @@ export class TouchInput {
     const role = this.roles.get(id)
     if (role === "move" && this.stick) {
       const s = this.stick
+      this.mvMaxDist = Math.max(this.mvMaxDist, Math.hypot(x - this.mvX, y - this.mvY))
       s.cx = x
       s.cy = y
       let dx = x - s.ox
@@ -133,6 +184,10 @@ export class TouchInput {
       this.stick = null
       this.moveX = 0
       this.moveY = 0
+      // Toque rápido: nunca se alejó del punto de apoyo y duró poco = "tocar al compañero" (pase de un dedo)
+      const h = Math.max(1, this.height)
+      const dist = Math.max(this.mvMaxDist, Math.hypot(x - this.mvX, y - this.mvY))
+      if (dist < TAP_MAX_DIST * h && t - this.mvT <= TAP_MAX_TIME) return { kind: "tap", x, y, strict: true }
       return null
     }
     this.samples.push({ t, x, y })
@@ -154,7 +209,7 @@ export class TouchInput {
     const total = Math.hypot(x - this.startX, y - this.startY)
     const dur = t - this.startT
     if (total < TAP_MAX_DIST * h) {
-      return dur <= TAP_MAX_TIME ? { kind: "tap" } : null
+      return dur <= TAP_MAX_TIME ? { kind: "tap", x, y } : null
     }
     if (total < FLICK_MIN_DIST * h) return null
 

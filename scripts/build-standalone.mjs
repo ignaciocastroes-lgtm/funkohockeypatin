@@ -52,6 +52,16 @@ ${defs}
 window.__app = __r("lib/app/app");
 })();`
 
+// Audios del público (public/audio/*.mp3) incrustados como data: URI: juego.html sigue siendo UN solo archivo.
+// El motor los busca en window.__FP_AUDIO__ antes de pedir /audio/... (ver audioUrl en lib/game/crowd.ts).
+const audioDir = join(root, "public", "audio")
+const audio = {}
+if (existsSync(audioDir)) {
+  for (const f of readdirSync(audioDir).sort()) {
+    if (f.endsWith(".mp3")) audio[f] = `data:audio/mpeg;base64,${readFileSync(join(audioDir, f)).toString("base64")}`
+  }
+}
+
 const html = `<!doctype html>
 <html lang="es">
 <head>
@@ -64,6 +74,7 @@ const html = `<!doctype html>
 </head>
 <body>
 <div id="app"></div>
+<script>window.__FP_AUDIO__ = ${JSON.stringify(audio)}</script>
 <script>
 ${bundle}
 (function () {
@@ -79,4 +90,4 @@ ${bundle}
 </html>
 `
 writeFileSync(out, html)
-console.log(`OK ${out} (${(html.length / 1024).toFixed(0)} KB, ${files.length} módulos)`)
+console.log(`OK ${out} (${(html.length / 1024).toFixed(0)} KB, ${files.length} módulos, ${Object.keys(audio).length} audios)`)

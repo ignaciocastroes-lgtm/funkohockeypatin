@@ -1,7 +1,7 @@
 import { RINK } from "./constants"
 import { GOALS } from "./geometry"
 import { passSpeedFor } from "./aim"
-import { findSkater, kick, setInput } from "./world"
+import { findSkater, kick, setInput, trySub } from "./world"
 import type { Side, Skater, World } from "./types"
 
 /**
@@ -69,6 +69,8 @@ export class TeamAI {
     }
     const carrier = w.puck.carrierId ? findSkater(w, w.puck.carrierId) : undefined
     if (!carrier) for (const x of this.mem.values()) x.carryTime = 0
+    // Cambio por cansancio: automático en cuanto hay alguien tirado y suplente fresco (tope: 3 por equipo).
+    for (const side of [0, 1] as Side[]) trySub(w, side)
     for (const side of [0, 1] as Side[]) this.updateSide(w, side, humanId, carrier, dt)
   }
 
@@ -174,7 +176,10 @@ export class TeamAI {
         const dx = own.lineX - o.x
         const dy = own.cy - o.y
         const d = Math.hypot(dx, dy) || 1
-        this.moveTo(w, s, o.x + (dx / d) * 1.9, o.y + (dy / d) * 1.9, speedMul, team, true)
+        // Cubre la línea de tiro, no al cuerpo: más cerca del rival cuanto más cerca está del arco
+        // (ahí el remate es real), más suelto cuando todavía está lejos (curar el pase, no pegarse).
+        const interpose = clamp(0.8 + (d / RINK.length) * 3.6, 0.8, 3.4)
+        this.moveTo(w, s, o.x + (dx / d) * interpose, o.y + (dy / d) * interpose, speedMul, team, true)
       })
     }
   }

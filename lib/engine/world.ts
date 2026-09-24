@@ -1,6 +1,6 @@
-import { FIXED_DT, GOAL, GOALIE, MATCH, PUCK, RINK, RULES, SKATER, SKATER_KINDS, SURFACES } from "./constants"
+import { CURVE, FIXED_DT, GOAL, GOALIE, MATCH, PUCK, RINK, RULES, SKATER, SKATER_KINDS, STAMINA, SUPER_SHOT_COST, SURFACES } from "./constants"
 import { boardContact, collectContacts, GOALS, type Contact } from "./geometry"
-import type { GameEvent, Goalie, Puck, Side, Skater, SkaterKind, World, WorldConfig } from "./types"
+import type { ComboState, GameEvent, Goalie, Puck, Side, Skater, SkaterKind, SubEntry, World, WorldConfig } from "./types"
 
 // ---------- utilidades ----------
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
@@ -82,18 +82,73 @@ function placeKickoff(w: World) {
   p.carrierId = null
   p.lastTouchId = null
   p.lastTouchSide = null
+  p.comboShot = false
+  p.spin = 0
+  w.attackCombo = null
+  w.defCombo = null
+  if (w.nextKickoffSide !== null) {
+    // Al que le hicieron el gol, sale con la pelota — no es un saque neutral.
+    const side = w.nextKickoffSide
+    const candidate = w.skaters.find((s) => s.side === side && s.isCaptain) ?? w.skaters.find((s) => s.side === side)
+    if (candidate) giveTo(w, candidate)
+    w.nextKickoffSide = null
+  }
+}
+
+function awardPenalty(w: World, side: Side) {
+  const geom = GOALS[side === 0 ? 1 : 0] // el arco RIVAL: ahí tira
+  const own = w.skaters.filter((s) => s.side === side)
+  const shooter = own.find((s) => s.isCaptain) ?? own[0]
+  if (!shooter) return
+  const sx = geom.lineX - geom.dir * RULES.penaltySpot
+  const heading = geom.dir > 0 ? 0 : Math.PI
+  for (const s of w.skaters) {
+    if (s === shooter) {
+      s.x = sx; s.y = geom.cy
+    } else {
+      // el resto, de los dos equipos, lejos del área — esto es mano a mano
+      s.x = RINK.length / 2 + (s.side === 0 ? -6 : 6)
+      s.y = s.side === 0 ? 3 : RINK.width - 3
+    }
+    s.vx = 0; s.vy = 0; s.px = s.x; s.py = s.y
+    s.inputX = 0; s.inputY = 0
+    s.pickupCooldown = 0; s.controlGrace = 0
+  }
+  shooter.heading = heading
+  shooter.stickAngle = heading
+  shooter.controlGrace = 0.5
+  for (const g of w.goalies) {
+    const gg = GOALS[g.side]
+    g.x = gg.lineX - gg.dir * GOALIE.standoff
+    g.y = gg.cy
+    g.vx = 0; g.vy = 0; g.px = g.x; g.py = g.y
+    g.aimY = gg.cy; g.reactTimer = 0; g.wasIncoming = false
+  }
+  const p = w.puck
+  p.x = sx; p.y = geom.cy; p.vx = 0; p.vy = 0; p.px = p.x; p.py = p.y
+  p.carrierId = shooter.id
+  p.lastTouchId = null; p.lastTouchSide = null
+  p.comboShot = false; p.spin = 0
+  w.attackCombo = null; w.defCombo = null
+  emit(w, { type: "penalty", side, shooterId: shooter.id })
 }
 
 export function createWorld(cfg: WorldConfig = {}): World {
   const teamSize = cfg.teamSize ?? MATCH.teamSize
+  // La plantilla total (en pista + suplentes) nunca es menor que teamSize; por defecto 6 (4 + 2).
+  const rosterSize = Math.max(teamSize, cfg.rosterSize ?? MATCH.rosterSize)
   const duration = cfg.duration ?? MATCH.duration
-  const hasGoalies = cfg.goalies ?? true
+  const goaliesBySide: [boolean, boolean] = Array.isArray(cfg.goalies)
+    ? cfg.goalies
+    : [cfg.goalies ?? true, cfg.goalies ?? true]
+  const hasGoalies = goaliesBySide[0] || goaliesBySide[1]
   const skaters: Skater[] = []
+  const restBench: SubEntry[] = []
   for (const side of [0, 1] as Side[]) {
-    for (let i = 0; i < teamSize; i++) {
+    for (let i = 0; i < rosterSize; i++) {
       const kind = cfg.kinds?.[side]?.[i] ?? DEFAULT_KINDS[i % DEFAULT_KINDS.length]
       const k = SKATER_KINDS[kind]
-      skaters.push({
+      const s: Skater = {
         id: `${side === 0 ? "L" : "V"}${i + 1}`,
         side, kind,
         name: cfg.names?.[side]?.[i] ?? `Jugador ${i + 1}`,
@@ -103,15 +158,24 @@ export function createWorld(cfg: WorldConfig = {}): World {
         heading: 0, stickAngle: 0,
         inputX: 0, inputY: 0,
         pickupCooldown: 0, controlGrace: 0,
-      })
+        stamina: STAMINA.max,
+      }
+      if (i < teamSize) skaters.push(s)
+      else {
+        // Suplentes: parqueados fuera de la pista (un poco separados de la banca de tarjeta azul).
+        s.x = side === 0 ? 6 : RINK.length - 6
+        s.y = RINK.width / 2 + 2.4 + (restBench.filter((b) => b.side === side).length) * 1.1
+        s.px = s.x; s.py = s.y
+        restBench.push({ skater: s, side })
+      }
     }
   }
-  const goalies: Goalie[] = hasGoalies
-    ? ([0, 1] as Side[]).map((side) => ({ side, x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0, radius: GOALIE.radius, aimY: 0, reactTimer: 0, wasIncoming: false }))
-    : []
+  const goalies: Goalie[] = ([0, 1] as Side[])
+    .filter((side) => goaliesBySide[side])
+    .map((side) => ({ side, x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0, radius: GOALIE.radius, aimY: 0, reactTimer: 0, wasIncoming: false }))
   const puck: Puck = {
     x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0,
-    radius: PUCK.radius, carrierId: null, lastTouchId: null, lastTouchSide: null,
+    radius: PUCK.radius, carrierId: null, lastTouchId: null, lastTouchSide: null, comboShot: false, spin: 0,
   }
   const w: World = {
     surface: cfg.surface ?? "madera",
@@ -119,6 +183,10 @@ export function createWorld(cfg: WorldConfig = {}): World {
     score: [0, 0], skaters, goalies, puck, events: [],
     hasGoalies, teamSize, duration,
     bench: [], fouls: [0, 0],
+    restBench, subsUsed: [0, 0],
+    attackCombo: null, defCombo: null,
+    suddenDeath: false,
+    nextKickoffSide: null,
   }
   placeKickoff(w)
   return w
@@ -152,7 +220,24 @@ export function kick(w: World, id: string, angle: number, speed: number): boolea
   const s = findSkater(w, id)
   const p = w.puck
   if (!s || p.carrierId !== id || w.phase !== "play") return false
-  const sp = clamp(speed, 0, SKATER.kickMaxSpeed)
+  let sp = clamp(speed, 0, SKATER.kickMaxSpeed)
+  let superShot = false
+
+  // Combo de ataque armado (3 toques) + este tiro va con fuerza real: es el golazo, no gasta energía.
+  const comboGoal = w.attackCombo?.side === s.side && w.attackCombo.touches >= 3 && sp >= STAMINA.superShotMinSpeed * 0.7
+  if (comboGoal) {
+    p.comboShot = true
+    w.attackCombo = null
+  } else if (sp >= STAMINA.superShotMinSpeed) {
+    // Super tiro en solitario: cuesta la mitad del tanque. Sin energía, se limita (no hay super).
+    if (s.stamina >= SUPER_SHOT_COST) {
+      s.stamina = clamp(s.stamina - SUPER_SHOT_COST, 0, STAMINA.max)
+      superShot = true
+    } else {
+      sp = Math.min(sp, STAMINA.superShotCappedSpeed)
+    }
+  }
+
   const cx = Math.cos(angle)
   const cy = Math.sin(angle)
   const off = s.radius + p.radius + SKATER.stickReach
@@ -162,12 +247,20 @@ export function kick(w: World, id: string, angle: number, speed: number): boolea
   if (bc) { p.x += bc.nx * bc.pen; p.y += bc.ny * bc.pen }
   p.vx = cx * sp + s.vx * SKATER.kickInherit
   p.vy = cy * sp + s.vy * SKATER.kickInherit
+  // Efecto: un tiro (no un pase, no el golazo de combo) tomado moviéndose de costado sale con
+  // curvatura, como un latigazo real. El golazo de combo sale siempre recto: ya costó armarlo.
+  if (!comboGoal && sp >= CURVE.minShotSpeed) {
+    const lateral = s.vx * -cy + s.vy * cx // velocidad del patinador perpendicular al tiro
+    p.spin = clamp(lateral * CURVE.spinPerLateralSpeed, -CURVE.maxSpin, CURVE.maxSpin)
+  } else {
+    p.spin = 0
+  }
   s.stickAngle = angle
   p.carrierId = null
   p.lastTouchId = s.id
   p.lastTouchSide = s.side
   s.pickupCooldown = SKATER.kickCooldown
-  emit(w, { type: "kick", id: s.id, speed: sp })
+  emit(w, { type: "kick", id: s.id, speed: sp, superShot })
   return true
 }
 
@@ -207,17 +300,23 @@ export function stepWorld(w: World, dt: number = FIXED_DT): void {
 
   if (w.phase === "play" && w.clock <= 0) {
     w.clock = 0
-    // El reloj llegó a 0: si el puck está suelto o en el aire, se concede un breve
-    // tiempo de gracia para que la jugada en curso pueda terminar (p. ej. un tiro ya
-    // lanzado) en vez de cortarla en seco.
-    w.phase = "timeOn"
-    w.phaseTimer = MATCH.timeOnGrace
+    if (w.puck.carrierId === null) {
+      // El puck está suelto o en el aire: se concede un breve tiempo de gracia para que la
+      // jugada en curso pueda terminar (p. ej. un tiro ya lanzado) en vez de cortarla en seco.
+      w.phase = "timeOn"
+      w.phaseTimer = MATCH.timeOnGrace
+    } else {
+      // Alguien lo lleva pegado al palo: no hay jugada "en el aire" que salvar, corta ahí.
+      w.phase = "ended"
+      emit(w, { type: "end" })
+    }
   }
 }
 
 /** Un paso de física/reglas, compartido entre la fase normal de juego y el tiempo de gracia. */
 function simulateTick(w: World, dt: number) {
   updateBench(w, dt)
+  updateRest(w, dt)
   updateSkaters(w, dt)
   updateGoalies(w, dt)
   collideBodies(w)
@@ -239,6 +338,9 @@ function applyFouls(w: World) {
     const benched = w.bench.filter((b) => b.side === off.side).length
     const onIce = w.skaters.filter((s) => s.side === off.side).length
     emit(w, { type: "foul", id: off.id, victim: f.vic.id, side: off.side, impact: f.impact })
+    if (w.fouls[off.side] % RULES.foulsPerPenalty === 0) {
+      awardPenalty(w, off.side === 0 ? 1 : 0)
+    }
     if (benched >= RULES.maxBenched || onIce <= RULES.minSkaters) continue
     if (w.puck.carrierId === off.id) releaseCarrier(w, off, SKATER.lostCooldown)
     w.skaters.splice(w.skaters.indexOf(off), 1)
@@ -266,6 +368,44 @@ function updateBench(w: World, dt: number) {
   }
 }
 
+// ---------- suplentes por cansancio (banca; NO es la tarjeta azul) ----------
+function updateRest(w: World, dt: number) {
+  for (const b of w.restBench) b.skater.stamina = clamp(b.skater.stamina + STAMINA.restRegenPerSecond * dt, 0, STAMINA.max)
+}
+
+/**
+ * Intenta el cambio por cansancio de `side`: saca al más cansado que esté por debajo del umbral
+ * (nunca al que lleva el puck) y mete al primer suplente fresco. Tope: RULES.maxFatigueSubs por
+ * equipo por partido. Devuelve true si el cambio se hizo.
+ */
+export function trySub(w: World, side: Side): boolean {
+  if (w.subsUsed[side] >= RULES.maxFatigueSubs) return false
+  const restIdx = w.restBench.findIndex((b) => b.side === side)
+  if (restIdx < 0) return false
+  let tired: Skater | null = null
+  for (const s of w.skaters) {
+    if (s.side !== side || s.id === w.puck.carrierId) continue
+    if (s.stamina < STAMINA.subThresholdPct && (!tired || s.stamina < tired.stamina)) tired = s
+  }
+  if (!tired) return false
+  const fresh = w.restBench[restIdx].skater
+  fresh.x = tired.x; fresh.y = tired.y; fresh.px = fresh.x; fresh.py = fresh.y
+  fresh.vx = 0; fresh.vy = 0
+  fresh.heading = tired.heading; fresh.stickAngle = tired.heading
+  fresh.pickupCooldown = 0; fresh.controlGrace = 0
+  fresh.inputX = 0; fresh.inputY = 0
+  const idx = w.skaters.indexOf(tired)
+  w.skaters[idx] = fresh
+  tired.x = side === 0 ? 6 : RINK.length - 6
+  tired.y = RINK.width / 2 + 2.4
+  tired.px = tired.x; tired.py = tired.y
+  tired.vx = 0; tired.vy = 0; tired.inputX = 0; tired.inputY = 0
+  w.restBench[restIdx] = { skater: tired, side }
+  w.subsUsed[side]++
+  emit(w, { type: "sub", side, outId: tired.id, inId: fresh.id })
+  return true
+}
+
 // ---------- patinadores ----------
 const _contacts: Contact[] = []
 
@@ -280,6 +420,12 @@ function updateSkaters(w: World, dt: number) {
     const maxV = s.maxSpeed * (carrying ? SKATER.carrySpeedMul : 1)
     const inMag = Math.min(1, Math.hypot(s.inputX, s.inputY))
     const speed = Math.hypot(s.vx, s.vy)
+
+    // Energía: solo se gasta mientras todavía está ganando velocidad (acelerando de verdad).
+    // Patinar ya a velocidad de crucero, o deslizar sin input, no cansa; incluso recupera un poco.
+    const accelerating = inMag > 0.3 && speed < maxV * 0.97
+    if (accelerating) s.stamina = clamp(s.stamina - STAMINA.drainPerSecond * dt, 0, STAMINA.max)
+    else s.stamina = clamp(s.stamina + STAMINA.iceRegenPerSecond * dt, 0, STAMINA.max)
 
     if (inMag > 0.01) {
       const tx = (s.inputX / Math.max(inMag, 1e-9)) * inMag * maxV
@@ -459,11 +605,36 @@ function resolveBodiesVsStatics(w: World) {
 }
 
 // ---------- posesión ----------
+/**
+ * Actualiza las cadenas de combo cuando cambia quién controla el puck.
+ * Mismo equipo que el último toque = pase completado (suma ataque, corta la defensa rival armada).
+ * Equipo distinto = robo/intercepción (corta el ataque rival, suma defensa de quien la recupera).
+ */
+function trackTouchChain(w: World, newOwner: Skater, prevSide: Side | null) {
+  if (prevSide === null) return // saque inicial: no hay cadena previa
+  if (prevSide === newOwner.side) {
+    const c = w.attackCombo
+    const touches = c && c.side === newOwner.side ? Math.min(3, c.touches + 1) : 1
+    w.attackCombo = { side: newOwner.side, touches }
+    if (touches === 3) emit(w, { type: "combo", side: newOwner.side, touches, kind: "attack" })
+    if (w.defCombo && w.defCombo.side !== newOwner.side) w.defCombo = null
+  } else {
+    w.attackCombo = null
+    const c = w.defCombo
+    const touches = c && c.side === newOwner.side ? Math.min(3, c.touches + 1) : 1
+    w.defCombo = { side: newOwner.side, touches }
+    if (touches === 3) emit(w, { type: "combo", side: newOwner.side, touches, kind: "defense" })
+  }
+}
+
 function giveTo(w: World, s: Skater) {
   const p = w.puck
+  trackTouchChain(w, s, p.lastTouchSide)
   p.carrierId = s.id
   p.lastTouchId = s.id
   p.lastTouchSide = s.side
+  p.comboShot = false
+  p.spin = 0
   s.controlGrace = SKATER.controlGrace
   s.stickAngle = Math.atan2(p.y - s.y, p.x - s.x)
   p.vx = s.vx
@@ -484,11 +655,31 @@ function placeCarried(w: World, s: Skater) {
 // ---------- puck ----------
 function scoreGoal(w: World, defendingSide: Side) {
   const scorer: Side = defendingSide === 0 ? 1 : 0
+  const combo = w.puck.comboShot
   w.score[scorer]++
   w.phase = "goal"
   w.phaseTimer = MATCH.goalPause
   w.puck.carrierId = null
-  emit(w, { type: "goal", side: scorer })
+  w.puck.comboShot = false
+  w.puck.spin = 0
+  w.attackCombo = null
+  w.defCombo = null
+  w.nextKickoffSide = defendingSide // al que le hicieron el gol, sale con la pelota
+  // Muerte súbita: ese gol ya define el partido, no sigue jugándose el resto del período.
+  if (w.suddenDeath) w.clock = 0
+  emit(w, { type: "goal", side: scorer, combo })
+}
+
+/**
+ * Arranca (o repite) un período de muerte súbita: `seconds` de gol de oro — el primero que
+ * entra termina el partido ahí mismo. Pensado para el desempate de Copa: si sigue empatado al
+ * cabo del período, se puede llamar de nuevo para otro. No toca el marcador (sigue igualado).
+ */
+export function startSuddenDeath(w: World, seconds: number): void {
+  w.suddenDeath = true
+  w.clock = seconds
+  w.duration = seconds
+  kickoff(w)
 }
 
 /** ¿El segmento (ox,oy)->(nx,ny) del centro del puck cruzó una línea de gol dentro de los postes? */
@@ -539,6 +730,10 @@ function updatePuck(w: World, dt: number) {
           if (o.side === carrier.side || o.pickupCooldown > 0) continue
           const d = Math.hypot(p.x - o.x, p.y - o.y)
           if (d <= o.radius + p.radius + SKATER.stealReach) {
+            // Robo con cono explícito: solo desde donde mira el portador (el cuerpo protege el
+            // puck por la espalda). No es un efecto emergente de la geometría.
+            const angToThief = Math.atan2(o.y - carrier.y, o.x - carrier.x)
+            if (Math.abs(angleDiff(carrier.heading, angToThief)) > SKATER.stealConeHalfAngle) continue
             const prev = carrier
             releaseCarrier(w, prev, SKATER.lostCooldown)
             giveTo(w, o)
@@ -565,6 +760,14 @@ function updatePuck(w: World, dt: number) {
     const k = PUCK.maxSpeed / speed
     p.vx *= k; p.vy *= k
     speed = PUCK.maxSpeed
+  }
+  // Efecto: curva la DIRECCIÓN del vuelo (no la velocidad), y se apaga con el tiempo — un tiro
+  // largo termina enderezándose, no da una vuelta imposible.
+  if (p.spin !== 0 && speed > 0) {
+    const ang = Math.atan2(p.vy, p.vx) + p.spin * dt
+    p.vx = Math.cos(ang) * speed
+    p.vy = Math.sin(ang) * speed
+    p.spin *= Math.max(0, 1 - CURVE.spinDecay * dt)
   }
 
   // 3) sub-pasos: el puck nunca avanza más de maxSubstep por iteración => no atraviesa postes ni líneas
@@ -603,6 +806,10 @@ function updatePuck(w: World, dt: number) {
       const dy = p.y - g.y
       const d = Math.hypot(dx, dy)
       if (d >= min) continue
+      // Golazo de combo: ya armó 3 toques y tira con fuerza — el arquero no lo frena en todo este vuelo
+      // (se limpia en la próxima recogida, gol o saque, no en el primer roce: a esta velocidad el puck
+      // puede tocar el radio del arquero en más de un sub-paso).
+      if (p.comboShot) { continue }
       const nx = d > 1e-9 ? dx / d : 1
       const ny = d > 1e-9 ? dy / d : 0
       p.x = g.x + nx * (min + 1e-4)
@@ -611,10 +818,20 @@ function updatePuck(w: World, dt: number) {
       const rvy = p.vy - g.vy
       const vn = rvx * nx + rvy * ny
       if (vn < 0) {
-        const e = PUCK.goalieRestitution
-        p.vx = g.vx + rvx - (1 + e) * vn * nx
-        p.vy = g.vy + rvy - (1 + e) * vn * ny
-        if (-vn > 3) emit(w, { type: "save", speed: -vn })
+        // Defensa con 3 toques armados: la próxima llegada a este arquero es atajada garantizada
+        // (transmisión), no una resolución normal de física.
+        const comboSave = w.defCombo?.side === g.side && w.defCombo.touches >= 3
+        if (comboSave) {
+          p.vx = g.vx
+          p.vy = g.vy
+          w.defCombo = null
+          emit(w, { type: "save", speed: -vn, combo: true })
+        } else {
+          const e = PUCK.goalieRestitution
+          p.vx = g.vx + rvx - (1 + e) * vn * nx
+          p.vy = g.vy + rvy - (1 + e) * vn * ny
+          if (-vn > 3) emit(w, { type: "save", speed: -vn })
+        }
       }
     }
 
@@ -660,7 +877,10 @@ function updatePuck(w: World, dt: number) {
           p.vy = s.vy + rvy - (1 + e) * vn * ny
           p.lastTouchId = s.id
           p.lastTouchSide = s.side
-          if (-vn > 3) emit(w, { type: "deflect", id: s.id, speed: -vn })
+          if (-vn > 3) {
+            emit(w, { type: "deflect", id: s.id, speed: -vn })
+            s.pickupCooldown = Math.max(s.pickupCooldown, SKATER.deflectCooldown)
+          }
         }
       }
     }

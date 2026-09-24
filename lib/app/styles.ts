@@ -19,6 +19,7 @@ export const CSS = `
 .fp-corner.bl{bottom:14px;left:14px;border-right:0;border-top:0}.fp-corner.br{bottom:14px;right:14px;border-left:0;border-top:0}
 
 .fp-menu{gap:22px}
+.fp-foot{position:absolute;left:0;right:0;bottom:max(4px,env(safe-area-inset-bottom));margin:0;text-align:center;font-size:11px;letter-spacing:.16em;color:#4ade80;opacity:.6;pointer-events:none;user-select:none}
 .fp-brand{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
 .fp-bolt{width:64px;height:64px;border-radius:50%;border:4px solid #ea580c;display:grid;place-items:center;box-shadow:0 0 28px #ea580c;color:#ea580c}
 .fp-h1{margin:0;font-size:clamp(20px,5.2vw,52px);line-height:1.15;color:#f97316;text-shadow:0 0 16px rgba(234,88,12,.85)}
@@ -74,6 +75,7 @@ export const CSS = `
 .fp-sw{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .fp-sw button{width:44px;height:44px;border-radius:50%;border:2px solid rgba(255,255,255,.4);cursor:pointer;padding:0}
 .fp-sw button[aria-pressed="true"]{border-color:#fff;box-shadow:0 0 0 2px #050914,0 0 0 4px #fff}
+.fp-crest{background:rgba(255,255,255,.08);font-size:22px;display:flex;align-items:center;justify-content:center;line-height:1}
 .fp-roster{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 @media (max-width:640px){.fp-roster{grid-template-columns:1fr}}
 .fp-player{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px}
@@ -82,8 +84,9 @@ export const CSS = `
 .fp-sticky .fp-btn{flex:1 1 150px;max-width:260px;min-width:0}
 
 .fp-match{position:absolute;inset:0;background:#050914}
-.fp-hud{position:absolute;top:max(8px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));display:flex;gap:8px;z-index:5}
+.fp-hud{position:absolute;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));display:flex;gap:8px;z-index:5}
 .fp-hud button{--c:#fff;width:46px;height:46px;min-height:0;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(0,0,0,.55);color:#fff;box-shadow:none;opacity:.7;font-size:18px;letter-spacing:0}
+.fp-hud button.view{font-size:12px;font-weight:800}
 .fp-hud button:hover,.fp-hud button:focus-visible{opacity:1;background:rgba(0,0,0,.8);color:#fff}
 
 .fp-overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(2,6,16,.82);backdrop-filter:blur(3px);animation:fp-in .25s ease-out}
@@ -103,9 +106,19 @@ export const CSS = `
   .fp-menu{flex-direction:row;gap:28px;justify-content:center}
   .fp-bolt{width:48px;height:48px}.fp-bolt svg{width:26px;height:26px}
   .fp-brand{flex:1;max-width:46%}.fp-actions{flex:1;gap:8px}.fp-btn{min-height:44px;padding:8px 14px}
+  /* menú en 2 columnas: con 7 botones (entrenamiento desbloqueado) una sola columna no entra en 320-390 px de alto */
+  .fp-menu .fp-actions{display:grid;grid-template-columns:1fr 1fr;align-content:center;gap:8px;max-width:none}
+  .fp-menu .fp-actions .fp-btn.solid,.fp-menu .fp-actions .fp-summary{grid-column:1 / -1}
+  .fp-menu .fp-actions .fp-btn{font-size:12px;line-height:1.15;padding:6px 8px}
+  .fp-menu .fp-actions .fp-summary{margin:0}
   .fp-corner{display:none}
   .fp-dialog{padding:12px;gap:8px}.fp-stats td{padding:4px}
   .fp-sticky{padding-top:6px}
+}
+@media (max-height:640px) and (orientation:portrait){
+  .fp-menu{gap:12px;padding-bottom:24px}.fp-menu .fp-actions{gap:8px}
+  .fp-menu .fp-brand{gap:4px}.fp-menu .fp-bolt{width:46px;height:46px;border-width:3px}.fp-menu .fp-bolt svg{width:24px;height:24px}
+  .fp-menu .fp-corner.bl,.fp-menu .fp-corner.br{display:none}
 }
 @media (max-width:420px){.fp-sticky .fp-btn{letter-spacing:.04em;padding:10px 8px;font-size:13px;flex-basis:0}}
 @media (prefers-reduced-motion:reduce){.fp-root *{animation:none!important;transition:none!important}}

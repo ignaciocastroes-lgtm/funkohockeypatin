@@ -2,6 +2,7 @@ import {
   Camera,
   FixedStepper,
   GOALS,
+  RINK,
   TeamAI,
   assistAim,
   bestPassTarget,
@@ -13,14 +14,18 @@ import {
   powerFromFlick,
   selectControlled,
   setInput,
+  startSuddenDeath,
   stepWorld,
+  teammateAtPoint,
 } from "../engine"
 import type { ActionEvent } from "./input"
 import type { SkaterKind, Side, Surface, World } from "../engine"
-import { drawHud, drawScene } from "./draw"
+import { EDGE_CHIP_R, drawHud, drawScene, teammateEdgeChips } from "./draw"
+import { canvasFontFamily } from "./cues"
 import { Confetti, ReplayBuffer, drawFlash, replayFrameAt, replayWorld } from "./effects"
 import type { Flash, GoalReplay } from "./effects"
-import { TouchInput } from "./input"
+import { TouchInput, isShootKey, keyboardVector } from "./input"
+import { Crowd } from "./crowd"
 import { Sfx } from "./sfx"
 
 export type Nivel = "facil" | "normal" | "dificil"
@@ -29,6 +34,7 @@ export const NIVEL_SKILL: Record<Nivel, number> = { facil: 0.3, normal: 0.6, dif
 export interface MatchTeam {
   name: string
   color: string
+  crest: string
   kinds: SkaterKind[]
   names: string[]
 }
@@ -46,6 +52,15 @@ export interface MatchOptions {
   debug?: boolean
   /** Semilla de la IA (por defecto aleatoria). */
   seed?: number
+  /** Modo demo/espectador: la IA controla los DOS lados, no hay jugador humano. El toque y el
+   *  teclado no mueven a nadie (solo sirven para pausar/salir desde el HUD normal). */
+  demo?: boolean
+  /** Solo en modo demo: se llama la PRIMERA vez que el usuario toca la pantalla o aprieta una
+   *  tecla — es la señal de "quiero jugar", para cortar el demo y arrancar un partido de verdad. */
+  onDemoTap?: () => void
+  /** Modo entrenamiento: sin equipo rival (la IA no controla nada del lado visita, queda quieto),
+   *  arquero configurable por lado, para practicar tiros libremente. */
+  training?: { goalie: "local" | "visita" | "ninguno" }
   /** Se llama una vez cuando suena el final. */
   onEnd?: (r: MatchResult) => void
   /** La pestaña se ocultó: el partido se pausó solo. */
@@ -60,23 +75,36 @@ export interface MatchResult {
   shots: [number, number]
 }
 
+export type ViewMode = "auto" | "full" | "three-quarter"
+
 export interface MatchHandle {
   destroy(): void
   pause(): void
   resume(): void
   setSound(on: boolean): void
+  /** Desempate de Copa: arranca (o repite) un período de muerte súbita de `seconds` (gol de oro). */
+  startSuddenDeath(seconds: number): void
+  /** Botón de un toque: pasa a la siguiente vista de cámara (seguir → cancha completa → 3/4 → seguir). */
+  cycleView(): void
+  readonly viewMode: ViewMode
   readonly paused: boolean
   readonly ended: boolean
   readonly world: World
   readonly input: TouchInput
   /** Solo para pruebas automáticas. */
   readonly stats: { frames: number; steps: number; controlledId: string | null }
+  /** Cámara actual (solo lectura): sirve para saber dónde cae cada jugador en pantalla en pruebas e2e. */
+  readonly camera: Camera
+  /** Estado del público (para pruebas e2e): null en el entrenamiento, que no tiene. */
+  readonly audio: { status: string; excitement: number; layers: number; master: number } | null
 }
 
-const FONT = "var(--font-orbitron), system-ui, -apple-system, 'Segoe UI', sans-serif"
+// Familia para el canvas. NO puede ser `var(--font-orbitron)` (el canvas la ignora): se resuelve al montar.
+let FONT = canvasFontFamily(null)
 const sideOf = (id: string): Side => (id[0] === "L" ? 0 : 1)
 
 export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle {
+  FONT = canvasFontFamily(getComputedStyle(container).getPropertyValue("--font-orbitron"))
   const canvas = document.createElement("canvas")
   canvas.setAttribute("role", "img")
   canvas.setAttribute("aria-label", "Cancha de hockey sobre patines")
@@ -87,9 +115,12 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
 
   const colors: [string, string] = [o.teams[0].color, o.teams[1].color]
   const names: [string, string] = [o.teams[0].name, o.teams[1].name]
+  const crests: [string, string] = [o.teams[0].crest, o.teams[1].crest]
   const world = createWorld({
     surface: o.surface,
     duration: o.duration,
+    teamSize: o.training ? 1 : undefined,
+    goalies: o.training ? [o.training.goalie === "local", o.training.goalie === "visita"] : undefined,
     kinds: [o.teams[0].kinds, o.teams[1].kinds],
     names: [o.teams[0].names, o.teams[1].names],
   })
@@ -99,9 +130,13 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded })
   const sfx = new Sfx()
   sfx.muted = o.sound === false
+  // Público de las gradas (murmullo, ovaciones, reacciones). El entrenamiento es práctica en soledad: sin público.
+  // En el demo (IA vs IA) no hay equipo "propio": festeja parejo.
+  const crowd = o.training ? null : new Crowd(sfx, o.demo ? null : 0)
   const confetti = new Confetti()
   const replayBuf = new ReplayBuffer(2.4)
   let flash: Flash | null = null
+  let viewMode: ViewMode = "auto"
   let goalReplay: GoalReplay | null = null
   const stats = { frames: 0, steps: 0, controlledId: null as string | null }
   const result: MatchResult = { score: [0, 0], fouls: [0, 0], steals: [0, 0], passes: [0, 0], shots: [0, 0] }
@@ -114,8 +149,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let ended = false
   let destroyed = false
   let banner: { text: string; until: number } | null = null
+  let lastGoalCombo = false
+  let firstActionDone = false
   let lastKick: { id: string } | null = null
   const pending: ActionEvent[] = []
+  let receiverLock: { id: string; until: number } | null = null
 
   const resize = () => {
     cssW = Math.max(1, container.clientWidth)
@@ -139,6 +177,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const onDown = (e: PointerEvent) => {
     e.preventDefault()
     sfx.unlock()
+    if (o.demo) { o.onDemoTap?.(); return } // "attract mode": cualquier toque corta el demo y arranca a jugar
     try { canvas.setPointerCapture(e.pointerId) } catch { /* ok */ }
     if (paused || ended) return
     const p = pos(e)
@@ -155,7 +194,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     sfx.unlock()
     const p = pos(e)
     const ev = input.up(e.pointerId, p.x, p.y, e.timeStamp / 1000)
-    if (ev && !paused && !ended) pending.push(ev)
+    if (ev && !paused && !ended && !o.demo) pending.push(ev)
   }
   const onCancel = (e: PointerEvent) => input.cancel(e.pointerId)
   const noMenu = (e: Event) => e.preventDefault()
@@ -164,6 +203,23 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   canvas.addEventListener("pointerup", onUp, { passive: false })
   canvas.addEventListener("pointercancel", onCancel)
   canvas.addEventListener("contextmenu", noMenu)
+
+  // ---------- teclado en escritorio: WASD/flechas mueven, Espacio tira/pasa ----------
+  // Independiente del mouse: en escritorio ya no hace falta arrastrar para moverse, el
+  // mouse queda libre para apuntar el flick en toda la pantalla.
+  const pressedKeys = new Set<string>()
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
+    if (o.demo) { if (!e.repeat) o.onDemoTap?.(); return } // cualquier tecla también cuenta como "quiero jugar"
+    pressedKeys.add(e.code)
+    if (isShootKey(e.code)) {
+      e.preventDefault() // que Espacio no scrollee la página
+      if (!e.repeat && !paused && !ended && !o.demo) pending.push({ kind: "tap" })
+    }
+  }
+  const onKeyUp = (e: KeyboardEvent) => { pressedKeys.delete(e.code) }
+  window.addEventListener("keydown", onKeyDown)
+  window.addEventListener("keyup", onKeyUp)
 
   const onVisibility = () => {
     if (document.hidden && !paused && !ended) { pause(); o.onAutoPause?.() }
@@ -176,6 +232,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     input.moveX = 0
     input.moveY = 0
     pending.length = 0
+    pressedKeys.clear()
   }
 
   function pause() {
@@ -191,6 +248,16 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     sfx.unlock()
   }
 
+  /** Compañero al que apunta un toque en pantalla: primero las flechas de borde, después los jugadores en cancha. */
+  function tappedTeammate(carrierId: string, sx: number, sy: number): string | null {
+    for (const c of teammateEdgeChips(world, cam, 0, controlledId, 1)) {
+      if (Math.hypot(c.x - sx, c.y - sy) <= EDGE_CHIP_R + 14) return c.id
+    }
+    const wp = cam.toWorld(sx, sy)
+    // zona tocable: al menos ~40 px de radio, aunque el jugador se vea chico (vista completa)
+    return teammateAtPoint(world, carrierId, wp.x, wp.y, Math.max(1.0, 40 / cam.ppm))
+  }
+
   /** Convierte un gesto en patada. Solo el portador del equipo humano puede patear. */
   function applyAction(ev: ActionEvent) {
     const cid = world.puck.carrierId
@@ -199,22 +266,44 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     if (ev.kind === "flick") {
       const speed = powerFromFlick(ev.vhPerSec)
       const r = assistAim(world, s.id, ev.angle, speed)
-      if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) controlledId = r.targetId
+      if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
     } else {
-      const tid = bestPassTarget(world, s.id)
+      // Pase de un dedo: si el toque cae sobre un compañero (o su flecha de borde), va a ese; si no,
+      // el toque suelto del dedo de acción sigue siendo pase automático al mejor. El toque del dedo de
+      // movimiento (`strict`) que no cae sobre nadie no hace nada: no regala la pelota por accidente.
+      let tid: string | null = ev.x !== undefined && ev.y !== undefined ? tappedTeammate(s.id, ev.x, ev.y) : null
+      if (!tid) {
+        if (ev.strict) return
+        tid = bestPassTarget(world, s.id)
+      }
       const t = tid ? findSkater(world, tid) : undefined
       if (!t) return
-      const d = Math.hypot(t.x - s.x, t.y - s.y)
-      const r = assistAim(world, s.id, Math.atan2(t.y - s.y, t.x - s.x), passSpeedFor(d))
-      // el control salta ya al receptor: sigues con el mismo dedo mientras el pase viaja
-      if (kick(world, s.id, r.angle, r.speed)) controlledId = r.targetId ?? t.id
+      // Apunta DIRECTO al elegido, adelantándose a donde va: la ayuda de puntería (`assistAim`) puede
+      // cambiar el receptor por otro compañero dentro de su cono, y si tocaste a alguien es a él.
+      const d0 = Math.hypot(t.x - s.x, t.y - s.y)
+      const flight = Math.min(0.8, d0 / 10)
+      const tx = t.x + t.vx * flight
+      const ty = t.y + t.vy * flight
+      const speed = passSpeedFor(Math.hypot(tx - s.x, ty - s.y))
+      if (kick(world, s.id, Math.atan2(ty - s.y, tx - s.x), speed)) lockReceiver(t.id)
     }
+  }
+
+  /**
+   * Tras un pase el control salta al receptor y SE QUEDA ahí mientras la pelota vuela: sin esto,
+   * `selectControlled` lo reasigna al compañero más cercano a donde estará la pelota, que en un pase
+   * largo suele ser otro. Se suelta cuando alguien agarra la pelota, a los 2.2 s, o si se corta el juego.
+   */
+  function lockReceiver(id: string) {
+    receiverLock = { id, until: world.time + 2.2 }
+    controlledId = id
   }
 
   function countEvent(ev: ReturnType<typeof drainEvents>[number]) {
     if (ev.type === "kick") {
       const s = findSkater(world, ev.id)
       if (s) {
+        if (s.side === 0) firstActionDone = true
         const g = GOALS[s.side === 0 ? 1 : 0]
         const u = s.side === 0 ? 1 : -1
         const toGoal = Math.atan2(g.cy - s.y, g.lineX - s.x)
@@ -253,9 +342,14 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     let alpha = 1
     if (!paused && !portrait) {
       alpha = stepper.advance(dt, (fixed) => {
-        controlledId = selectControlled(world, 0, controlledId)
-        ai.update(world, controlledId, fixed)
-        if (controlledId) setInput(world, controlledId, input.moveX, input.moveY)
+        if (receiverLock && (world.puck.carrierId !== null || world.time > receiverLock.until || world.phase !== "play" || !findSkater(world, receiverLock.id))) receiverLock = null
+        controlledId = o.demo ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
+        if (!o.training) ai.update(world, controlledId, fixed)
+        if (controlledId) {
+          const kb = keyboardVector(pressedKeys)
+          const useKb = kb.x !== 0 || kb.y !== 0
+          setInput(world, controlledId, useKb ? kb.x : input.moveX, useKb ? kb.y : input.moveY)
+        }
         while (pending.length) applyAction(pending.shift() as ActionEvent)
         stepWorld(world, fixed)
         stepsThisFrame++
@@ -265,12 +359,24 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
           for (const ev of drainEvents(world)) {
             countEvent(ev)
             sfx.play(ev)
+            crowd?.onEvent(ev, world, cam.cx, cam.width)
             if (ev.type === "foul") {
               banner = { text: `¡FALTA! Tarjeta azul ${names[ev.side]} #${ev.id.slice(1)}`, until: now + 1900 }
+              flash = { color: "#3b82f6", startedAt: now, durationMs: 260 }
               navigator.vibrate?.(60)
+            } else if (ev.type === "combo") {
+              banner = { text: `${names[ev.side]} — combo ${ev.kind === "attack" ? "de ataque" : "defensivo"} armado`, until: now + 1400 }
+              navigator.vibrate?.(30)
+            } else if (ev.type === "sub") {
+              banner = { text: `Cambio ${names[ev.side]}: entra #${ev.inId.slice(1)}`, until: now + 1400 }
+            } else if (ev.type === "penalty") {
+              banner = { text: `¡PENAL para ${names[ev.side]}!`, until: now + 2200 }
+              flash = { color: "#facc15", startedAt: now, durationMs: 260 }
+              navigator.vibrate?.([40, 60, 40])
             } else if (ev.type === "goal") {
               navigator.vibrate?.(120)
               flash = { color: colors[ev.side], startedAt: now, durationMs: 220 }
+              lastGoalCombo = !!ev.combo
               const conceded = GOALS[ev.side === 0 ? 1 : 0]
               const scr = cam.toScreen(conceded.lineX, conceded.cy)
               confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffd23f", "#ffffff"], 110)
@@ -287,8 +393,16 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       })
     }
     stats.controlledId = controlledId
+    if (crowd) { crowd.setPaused(paused || portrait); crowd.update(world, dt) }
 
-    cam.update(dt, world, controlledId, cssW, cssH)
+    if (viewMode === "auto") {
+      cam.update(dt, world, controlledId, cssW, cssH)
+    } else {
+      const aspect = cssW / cssH
+      const margin = 2.2
+      const fullW = Math.max(RINK.length + margin * 2, (RINK.width + margin * 2) * aspect)
+      cam.frame(cssW, cssH, viewMode === "full" ? fullW : fullW * 0.62, RINK.length / 2, RINK.width / 2)
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     // Gol: mientras dura la pausa de festejo, se reproduce en cámara lenta lo que pasó
@@ -301,7 +415,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     } else if (goalReplay) {
       goalReplay = null
     }
-    const opts = { controlledId, colors, names, alpha: sceneAlpha, fontFamily: FONT }
+    const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, names, crests, alpha: sceneAlpha, fontFamily: FONT }
     drawScene(ctx, sceneWorld, cam, opts)
     if (flash) {
       drawFlash(ctx, flash, now, cssW, cssH)
@@ -309,7 +423,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     }
     confetti.update(dt)
     confetti.draw(ctx, cssW, cssH)
-    drawHud(ctx, world, cam, { ...opts, alpha })
+    drawHud(ctx, world, cam, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo })
     drawTouchOverlay(ctx, world, cam, input, controlledId)
     if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
     if (portrait) drawRotateHint(ctx, cssW, cssH)
@@ -323,9 +437,25 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     get ended() { return ended },
     input,
     stats,
+    get camera() { return cam },
+    get audio() { return crowd ? crowd.info : null },
     pause,
     resume,
     setSound(on: boolean) { sfx.muted = !on },
+    startSuddenDeath(seconds: number) {
+      ended = false
+      paused = false
+      startSuddenDeath(world, seconds)
+      stepper.reset()
+      last = 0
+      banner = { text: "¡Muerte súbita! Gol de oro", until: performance.now() + 2600 }
+      sfx.unlock()
+    },
+    cycleView() {
+      viewMode = viewMode === "auto" ? "full" : viewMode === "full" ? "three-quarter" : "auto"
+      if (viewMode === "auto") cam.reset()
+    },
+    get viewMode() { return viewMode },
     destroy() {
       destroyed = true
       cancelAnimationFrame(raf)
@@ -338,6 +468,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       canvas.removeEventListener("pointerup", onUp)
       canvas.removeEventListener("pointercancel", onCancel)
       canvas.removeEventListener("contextmenu", noMenu)
+      window.removeEventListener("keydown", onKeyDown)
+      window.removeEventListener("keyup", onKeyUp)
+      crowd?.stop()
       sfx.close()
       canvas.remove()
     },

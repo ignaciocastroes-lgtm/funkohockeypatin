@@ -1,4 +1,5 @@
 import type { SkaterKind, Surface } from "../engine"
+import { colorDistance, rgb } from "../game/cues"
 
 export interface RosterPlayer { name: string; kind: SkaterKind }
 
@@ -7,14 +8,42 @@ export interface Team {
   id: string
   name: string
   color: string
+  /** Escudo del equipo para el marcador (un emoji, del set CRESTS — incluye banderas). */
+  crest: string
   /** Pista de localía: la superficie donde juega cuando es local. */
   surface: Surface
-  /** Siempre 4 jugadores; el índice 0 es el capitán. */
+  /** Categoría (solo etiqueta: no afecta el motor ni el balance). */
+  category: Category
+  /** Siempre 6 jugadores (4 en pista + 2 suplentes por cansancio); el índice 0 es el capitán. */
   roster: RosterPlayer[]
   builtin?: boolean
 }
 
-export const ROSTER_SIZE = 4
+/**
+ * Set curado de escudos: iconos de club + banderas de países con tradición de hockey patín, para
+ * armar selecciones (España, Portugal, Argentina, Chile...) sin depender de assets externos —
+ * son emoji, se dibujan igual que cualquier otro crest.
+ */
+export const CRESTS = [
+  "🦅", "🦈", "🐍", "🐉", "🐺", "🐻", "🦁", "🐆", "🦂", "🐗", "🦌", "🦇", "⚡", "🔥", "❄️", "💀",
+  "🇪🇸", "🇵🇹", "🇦🇷", "🇨🇱", "🇮🇹", "🇫🇷", "🇧🇷", "🇩🇪", "🇦🇩", "🇦🇴", "🇲🇽", "🇺🇸",
+]
+export const DEFAULT_CREST = CRESTS[0]
+
+export function isCrest(v: unknown): v is string {
+  return typeof v === "string" && CRESTS.includes(v)
+}
+
+export const CATEGORIES = ["mixto", "masculino", "femenino"] as const
+export type Category = (typeof CATEGORIES)[number]
+export const CATEGORY_LABEL: Record<Category, string> = { mixto: "Mixto", masculino: "Masculino", femenino: "Femenino" }
+export const DEFAULT_CATEGORY: Category = "mixto"
+
+export function isCategory(v: unknown): v is Category {
+  return typeof v === "string" && (CATEGORIES as readonly string[]).includes(v)
+}
+
+export const ROSTER_SIZE = 6
 export const MAX_CUSTOM_TEAMS = 12
 export const NAME_MAX = 12
 export const PLAYER_NAME_MAX = 10
@@ -30,18 +59,35 @@ export const SURFACE_HINT: Record<Surface, string> = {
   cemento: "Lenta: frena rápido",
 }
 
-const roster = (names: string[], kinds: SkaterKind[] = ["pesado", "equilibrado", "veloz", "equilibrado"]): RosterPlayer[] =>
+const DEFAULT_KINDS: SkaterKind[] = ["pesado", "equilibrado", "veloz", "equilibrado", "equilibrado", "veloz"]
+
+const roster = (names: string[], kinds: SkaterKind[] = DEFAULT_KINDS): RosterPlayer[] =>
   names.map((name, i) => ({ name, kind: kinds[i] }))
 
-export const DEFAULT_TEAMS: Team[] = [
-  { id: "t1", name: "HALCONES", color: "#ea580c", surface: "madera", builtin: true, roster: roster(["Capi", "Rayo", "Turbo", "Nacho"]) },
-  { id: "t2", name: "TIBURONES", color: "#0ea5e9", surface: "sintetico", builtin: true, roster: roster(["Diente", "Marea", "Flecha", "Coral"]) },
-  { id: "t3", name: "COBRAS", color: "#eab308", surface: "cemento", builtin: true, roster: roster(["Venom", "Sombra", "Rápida", "Colmillo"]) },
-  { id: "t4", name: "DRAGONES", color: "#ef4444", surface: "madera", builtin: true, roster: roster(["Fuego", "Escama", "Ala", "Brasa"]) },
+/**
+ * Selecciones nacionales: mismo tratamiento que los equipos de club (builtin, siempre disponibles,
+ * no cuentan contra el cupo de equipos propios). Nombres de plantilla ficticios, no de jugadores
+ * reales. `distinctColors()` ya separa los colores en cancha si dos selecciones quedan parecidas.
+ */
+export const NATIONAL_TEAMS: Team[] = [
+  { id: "n-es", name: "ESPAÑA", color: "#c8102e", crest: "🇪🇸", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Matador", "Furia", "Toro", "Brava", "Sol", "Fiesta"]) },
+  { id: "n-pt", name: "PORTUGAL", color: "#046a38", crest: "🇵🇹", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Navegante", "Fado", "Océano", "Vela", "Farol", "Bravo"]) },
+  { id: "n-ar", name: "ARGENTINA", color: "#6cace4", crest: "🇦🇷", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Gaucho", "Pampa", "Tango", "Che", "Mate", "Fueguito"]) },
+  { id: "n-cl", name: "CHILE", color: "#0039a6", crest: "🇨🇱", surface: "madera", category: "mixto", builtin: true, roster: roster(["Cóndor", "Andino", "Volcán", "Austral", "Copihue", "Roble"]) },
+  { id: "n-it", name: "ITALIA", color: "#14b8a6", crest: "🇮🇹", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Azzurro", "Vespa", "Fontana", "Góndola", "Vulcano", "Pasta"]) },
+  { id: "n-fr", name: "FRANCIA", color: "#002654", crest: "🇫🇷", surface: "madera", category: "mixto", builtin: true, roster: roster(["Gallo", "Eiffel", "Brisa", "Lavanda", "Bistró", "Marino"]) },
+  { id: "n-br", name: "BRASIL", color: "#ffdf00", crest: "🇧🇷", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Samba", "Carioca", "Malandro", "Zagueiro", "Batucada", "Ginga"]) },
+  { id: "n-de", name: "ALEMANIA", color: "#f4f4f5", crest: "🇩🇪", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Panzer", "Águila", "Bosque", "Acero", "Rayo", "Muralla"]) },
+  { id: "n-ad", name: "ANDORRA", color: "#e63946", crest: "🇦🇩", surface: "madera", category: "mixto", builtin: true, roster: roster(["Pirineo", "Nieve", "Cumbre", "Refugio", "Alud", "Sendero"]) },
+  { id: "n-ao", name: "ANGOLA", color: "#f9a01b", crest: "🇦🇴", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Kalunga", "Baobab", "Tambor", "Savana", "Kianda", "Muxima"]) },
+  { id: "n-mx", name: "MÉXICO", color: "#006341", crest: "🇲🇽", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Azteca", "Charro", "Nopal", "Águila", "Fiesta", "Volcán"]) },
+  { id: "n-us", name: "ESTADOS UNIDOS", color: "#0a3161", crest: "🇺🇸", surface: "madera", category: "mixto", builtin: true, roster: roster(["Liberty", "Estrella", "Trueno", "Yankee", "Eagle", "Rocket"]) },
 ]
 
+export const DEFAULT_TEAMS: Team[] = [...NATIONAL_TEAMS]
+
 export function defaultRoster(): RosterPlayer[] {
-  return roster(["Capitán", "Jugador 2", "Jugador 3", "Jugador 4"])
+  return roster(["Capitán", "Jugador 2", "Jugador 3", "Jugador 4", "Jugador 5", "Jugador 6"])
 }
 
 export const HEX = /^#[0-9a-f]{6}$/i
@@ -67,10 +113,10 @@ export function sanitizeTeam(raw: unknown): Team | null {
     const p = (t.roster[i] ?? {}) as Record<string, unknown>
     players.push({ name: clean(p.name, PLAYER_NAME_MAX) || (i === 0 ? "Capitán" : `Jugador ${i + 1}`), kind: isKind(p.kind) ? p.kind : "equilibrado" })
   }
-  return { id, name, color: String(t.color).toLowerCase(), surface: t.surface, roster: players }
+  return { id, name, color: String(t.color).toLowerCase(), crest: isCrest(t.crest) ? t.crest : DEFAULT_CREST, surface: t.surface, category: isCategory(t.category) ? t.category : DEFAULT_CATEGORY, roster: players }
 }
 
-export interface TeamDraft { name: string; color: string; surface: Surface; roster: RosterPlayer[] }
+export interface TeamDraft { name: string; color: string; crest: string; surface: Surface; category: Category; roster: RosterPlayer[] }
 
 export type MakeResult = { team: Team } | { error: string }
 
@@ -83,6 +129,8 @@ export function makeTeam(draft: TeamDraft, existing: Team[], editId?: string): M
   if (!name) return { error: "Ponle nombre al equipo." }
   if (!HEX.test(draft.color)) return { error: "Elige un color válido." }
   if (existing.some((t) => t.id !== editId && t.name === name)) return { error: `Ya existe un equipo llamado ${name}.` }
+  const crest = isCrest(draft.crest) ? draft.crest : DEFAULT_CREST
+  const category = isCategory(draft.category) ? draft.category : DEFAULT_CATEGORY
   const players: RosterPlayer[] = []
   for (let i = 0; i < ROSTER_SIZE; i++) {
     const p = draft.roster[i]
@@ -92,25 +140,12 @@ export function makeTeam(draft: TeamDraft, existing: Team[], editId?: string): M
     })
   }
   const id = editId ?? `c-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`
-  return { team: { id, name, color: draft.color.toLowerCase(), surface: draft.surface, roster: players } }
+  return { team: { id, name, color: draft.color.toLowerCase(), crest, category, surface: draft.surface, roster: players } }
 }
 
 // ---------- colores ----------
-function rgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.slice(1), 16)
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-}
-
-/** Distancia perceptual aproximada entre dos colores (0..~765). Fórmula "redmean". */
-export function colorDistance(a: string, b: string): number {
-  const [r1, g1, b1] = rgb(a)
-  const [r2, g2, b2] = rgb(b)
-  const rm = (r1 + r2) / 2
-  const dr = r1 - r2
-  const dg = g1 - g2
-  const db = b1 - b2
-  return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db)
-}
+// `rgb` y `colorDistance` viven en game/cues.ts (las usa también el dibujo del aura de equipo).
+export { colorDistance }
 
 export const MIN_COLOR_DISTANCE = 110
 

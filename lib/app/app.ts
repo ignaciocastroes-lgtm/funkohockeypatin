@@ -1,13 +1,15 @@
 import { mountMatch } from "../game/match"
+import { digitFromCode } from "../game/input"
+import { shouldShowCupTutorial } from "./tutorial"
 import type { MatchHandle, MatchOptions, MatchResult, Nivel } from "../game/match"
 import { DURATIONS, allTeams, load, normalize, save } from "./storage"
 import type { Saved } from "./storage"
 import { CSS } from "./styles"
 import {
-  KINDS, KIND_LABEL, MAX_CUSTOM_TEAMS, NAME_MAX, PLAYER_NAME_MAX, SURFACES, SURFACE_HINT, SURFACE_LABEL,
+  CATEGORIES, CATEGORY_LABEL, CRESTS, KINDS, KIND_LABEL, MAX_CUSTOM_TEAMS, NAME_MAX, PLAYER_NAME_MAX, SURFACES, SURFACE_HINT, SURFACE_LABEL,
   defaultRoster, distinctColors, makeTeam,
 } from "./teams"
-import type { Team, TeamDraft } from "./teams"
+import type { Category, Team, TeamDraft } from "./teams"
 import { newCup, nextMatch, recordResult } from "./cup"
 import type { Cup, CupMatch, MatchSlot } from "./cup"
 import type { SkaterKind, Surface } from "../engine"
@@ -31,7 +33,7 @@ export interface AppHandle {
   readonly debug: { screen: () => string; match: () => MatchHandle | null; saved: () => Saved }
 }
 
-type Screen = "menu" | "setup" | "editor" | "credits" | "match" | "cup"
+type Screen = "menu" | "setup" | "editor" | "credits" | "match" | "cup" | "training"
 type Child = Node | string | null | undefined | false
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...kids: Child[]): HTMLElementTagNameMap[K] {
@@ -54,6 +56,8 @@ const NIVELES: Array<{ value: Nivel; label: string }> = [
 ]
 const NIVEL_LABEL: Record<Nivel, string> = { facil: "Fácil", normal: "Normal", dificil: "Difícil" }
 const SWATCHES = ["#10b981", "#a855f7", "#f472b6", "#22c55e", "#f97316", "#14b8a6", "#e11d48", "#94a3b8"]
+/** Desempate de Copa: muerte súbita, gol de oro. Si sigue empatado al cabo, se repite otro período. */
+const SUDDEN_DEATH_SECONDS = 60
 
 const fmtDur = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 
@@ -82,8 +86,8 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   const teamById = (id: string): Team => allTeams(saved).find((t) => t.id === id) ?? allTeams(saved)[0]
 
   function newDraft(from?: Team): TeamDraft {
-    if (from) return { name: from.name, color: from.color, surface: from.surface, roster: from.roster.map((p) => ({ ...p })) }
-    return { name: "NUEVO EQUIPO", color: SWATCHES[0], surface: "madera", roster: defaultRoster() }
+    if (from) return { name: from.name, color: from.color, crest: from.crest, surface: from.surface, category: from.category, roster: from.roster.map((p) => ({ ...p })) }
+    return { name: "NUEVO EQUIPO", color: SWATCHES[0], crest: CRESTS[0], surface: "madera", category: "mixto", roster: defaultRoster() }
   }
 
   // ---------- render con conservación de scroll y foco ----------
@@ -97,6 +101,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       : screen === "editor" ? editorScreen()
       : screen === "credits" ? creditsScreen()
       : screen === "cup" ? cupScreen()
+      : screen === "training" ? trainingScreen()
       : null
     if (next) {
       view.replaceChildren(next)
@@ -139,15 +144,29 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         h("button", { class: "fp-btn cy", "data-key": "setup", onclick: () => go("setup") }, "Equipos y ajustes"),
         h("button", { class: "fp-btn ye", "data-key": "cup", onclick: () => go("cup") }, saved.cup ? "Copa (en curso)" : "Copa"),
         h("button", { class: "fp-btn ye", "data-key": "new", onclick: () => openEditor(null) }, "Crear equipo"),
+        h("button", { class: "fp-btn gr", "data-key": "demo", onclick: () => startDemo() }, "Modo demo (IA vs IA)"),
+        (saved.settings.trainingUnlocked || !!saved.cup?.championId)
+          ? h("button", { class: "fp-btn gr", "data-key": "training", onclick: () => go("training") }, "Modo entrenamiento")
+          : null,
         h("button", { class: "fp-btn te", "data-key": "credits", onclick: () => go("credits") }, "Créditos"),
       ),
+      // marca al pie: el marcador del juego es el de ardisport.cl (texto, no link: un link chico rompería los 44 px)
+      h("p", { class: "fp-foot" }, "ardisport.cl"),
     )
   }
 
-  function topBar(title: string, color: string, back: () => void): HTMLElement {
+  function topBar(title: string, color: string, back: () => void, onTitleHold?: () => void): HTMLElement {
+    let holdTimer = 0
+    const startHold = () => { if (onTitleHold) holdTimer = window.setTimeout(onTitleHold, 6000) }
+    const cancelHold = () => window.clearTimeout(holdTimer)
     return h("div", { class: "fp-top" },
       h("button", { class: "fp-btn fp-back", "data-key": "back", "aria-label": "Volver", onclick: back }, "‹ Volver"),
-      h("h2", { class: "fp-h2 fp-arcade", style: `color:${color}` }, title),
+      h("h2", {
+        class: "fp-h2 fp-arcade", style: `color:${color}`,
+        ...(onTitleHold ? {
+          onpointerdown: startHold, onpointerup: cancelHold, onpointerleave: cancelHold, onpointercancel: cancelHold,
+        } : {}),
+      }, title),
       h("span", { style: "width:78px", "aria-hidden": "true" }),
     )
   }
@@ -198,7 +217,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const teams = allTeams(saved)
     const local = teamById(s.localId)
     return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
-      topBar("PARTIDO", "#22d3ee", () => go("menu")),
+      topBar("PARTIDO", "#22d3ee", () => go("menu"), () => unlockTraining()),
       h("div", { class: "fp-two" },
         h("section", { class: "fp-panel" }, h("h3", {}, "Tu equipo (local)"),
           h("div", { class: "fp-grid", role: "radiogroup", "aria-label": "Equipo local" }, ...teams.map((t) => teamChip(t, "local")))),
@@ -248,6 +267,15 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     }
     refreshDots()
 
+    const crestHost = h("div", { class: "fp-sw", role: "group", "aria-label": "Escudo del equipo" })
+    const refreshCrests = () => {
+      crestHost.replaceChildren(...CRESTS.map((c) => h("button", {
+        type: "button", class: "fp-crest", "aria-label": `Escudo ${c}`, "aria-pressed": String(c === draft.crest),
+        onclick: () => { draft.crest = c; refreshCrests() },
+      }, c)))
+    }
+    refreshCrests()
+
     const errorEl = h("p", { class: "fp-error", role: "alert", "data-key": "error" }, draftError)
 
     const rosterEls = draft.roster.map((p, i) => h("div", { class: "fp-player" },
@@ -275,10 +303,13 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
           h("div", {}, h("label", { class: "fp-lab", for: "fp-name" }, "Nombre"), nameInput),
           h("div", {}, h("span", { class: "fp-lab" }, "Color"), colorInput, dotsHost),
         ),
+        h("div", {}, h("span", { class: "fp-lab" }, "Escudo"), crestHost),
       ),
       h("section", { class: "fp-panel" },
         segmented<Surface>("Pista de localía", "surf", SURFACES.map((v) => ({ value: v, label: SURFACE_LABEL[v] })), draft.surface, (v) => { draft.surface = v; render() }),
         h("p", { class: "fp-note" }, `${SURFACE_HINT[draft.surface]}. Aplica cuando este equipo juega de local.`),
+        segmented<Category>("Categoría", "cat", CATEGORIES.map((v) => ({ value: v, label: CATEGORY_LABEL[v] })), draft.category, (v) => { draft.category = v; render() }),
+        h("p", { class: "fp-note" }, "Solo una etiqueta: no cambia nada del motor ni del balance."),
       ),
       h("section", { class: "fp-panel" }, h("h3", {}, "Plantilla titular"), h("div", { class: "fp-roster" }, ...rosterEls),
         h("p", { class: "fp-note" }, "Pesado: aguanta golpes pero es lento. Veloz: ágil pero liviano. El primero es el capitán."),
@@ -321,12 +352,18 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   function creditsScreen(): HTMLElement {
-    return h("main", { class: "fp-screen", style: "text-align:center;gap:18px" },
+    return h("main", { class: "fp-screen fp-scroll", style: "text-align:center;gap:18px" },
       h("h2", { class: "fp-arcade", style: "color:#2dd4bf;margin:0;font-size:clamp(18px,4vw,34px)" }, "CRÉDITOS"),
       h("p", { style: "margin:0;font-size:clamp(14px,2.6vw,20px);line-height:1.8" },
         "Desarrollo original: ", h("b", { style: "color:#facc15" }, "Ignacio"), h("br"),
         "Motor físico y sanciones: ", h("b", { style: "color:#22d3ee" }, "Liga Funko-Patín Team"), h("br"),
         "Pista: ", h("b", { style: "color:#ea580c" }, "40 × 20 m, reglamentaria")),
+      h("p", { style: "margin:0;font-size:clamp(13px,2.4vw,18px);line-height:1.8;color:rgba(255,255,255,.85)" },
+        "Marcador oficial: ", h("b", { style: "color:#4ade80" }, "ardisport.cl"), h("br"),
+        "Un saludo especial a ", h("b", { style: "color:#f472b6" }, "BYN"), " y a mis ", h("b", { style: "color:#f472b6" }, "4 hijos"), "."),
+      h("p", { style: "margin:0;font-size:clamp(12px,2.2vw,16px);line-height:1.7;color:rgba(255,255,255,.7)" },
+        "Público de las gradas: grabaciones de estadio de ", h("b", {}, "mykelu"), ", ", h("b", {}, "arunangshubanerjee"), ", ",
+        h("b", {}, "u_xg7ssi08yr"), " y ", h("b", {}, "vishiv"), " (Pixabay), editadas para el juego."),
       h("button", { class: "fp-btn gr", "data-key": "back", onclick: () => go("menu") }, "Volver"),
     )
   }
@@ -345,6 +382,15 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       }, b.label))),
     )
     openModal(host, h("div", { class: "fp-overlay", style: "z-index:30" }, box))
+  }
+
+  /** Desbloquea entrenamiento (Copa ganada aparte) y avisa — antes se hacía en silencio. */
+  function unlockTraining() {
+    if (saved.settings.trainingUnlocked) return
+    saved.settings.trainingUnlocked = true
+    persist()
+    render()
+    showDialog("¡MODO ENTRENAMIENTO DESBLOQUEADO!", "Ya está disponible desde el menú principal.", [{ label: "Genial", primary: true }])
   }
   let inertTargets: Element[] = []
   /** Abre un diálogo modal: todo lo demás del contenedor queda inerte (sin foco de teclado ni toques). */
@@ -369,7 +415,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const local = teamById(localId)
     const visit = teamById(visitId)
     const [lc, vc] = distinctColors(local.color, visit.color)
-    const mk = (t: Team, color: string) => ({ name: t.name, color, kinds: t.roster.map((p) => p.kind), names: t.roster.map((p) => p.name) })
+    const mk = (t: Team, color: string) => ({ name: t.name, color, crest: t.crest, kinds: t.roster.map((p) => p.kind), names: t.roster.map((p) => p.name) })
     return {
       teams: [mk(local, lc), mk(visit, vc)],
       surface: local.surface,
@@ -388,12 +434,24 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     match?.destroy()
     match = null
     cupPlaying = null
+    demoPlaying = false
+    demoFromBoot = false
+    trainingPlaying = null
   }
 
   /** Barra fija de controles (pausa / pantalla completa / sonido) sobre el partido en curso. */
   function matchHudBar(wrap: HTMLElement, m: MatchHandle): HTMLElement {
+    const viewLabel = (v: string) => (v === "full" ? "TOT" : v === "three-quarter" ? "3/4" : "SEG")
+    const viewName = (v: string) => (v === "full" ? "cancha completa" : v === "three-quarter" ? "3/4 de cancha" : "seguir la jugada")
     return h("div", { class: "fp-hud" },
       h("button", { class: "fp-btn", "aria-label": "Pausa", "data-key": "pause", onclick: () => showPause(wrap) }, "❚❚"),
+      h("button", { class: "fp-btn view", "aria-label": `Vista: ${viewName(m.viewMode)} — tocá para cambiar`, "data-key": "view",
+        onclick: (e: Event) => {
+          m.cycleView()
+          const b = e.currentTarget as HTMLElement
+          b.textContent = viewLabel(m.viewMode)
+          b.setAttribute("aria-label", `Vista: ${viewName(m.viewMode)} — tocá para cambiar`)
+        } }, viewLabel(m.viewMode)),
       canFullscreen() ? h("button", { class: "fp-btn", "aria-label": "Pantalla completa", "data-key": "fs", onclick: toggleFullscreen }, "⛶") : null,
       h("button", { class: "fp-btn", "aria-label": saved.settings.sound ? "Silenciar" : "Activar sonido", "data-key": "snd", "aria-pressed": String(saved.settings.sound),
         onclick: (e: Event) => {
@@ -406,6 +464,35 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
           persist()
         } }, saved.settings.sound ? "🔊" : "🔇"),
     )
+  }
+
+  let tutorialShownForCup: string | null = null
+
+  function showTutorial(wrap: HTMLElement) {
+    // Se demora un toque a propósito: si pausa en el mismo frame que arranca el partido, el
+    // diálogo tapa el saque inicial antes de que se vea un solo instante de juego.
+    window.setTimeout(() => {
+      if (destroyed || !match || match.ended || dialog) return
+      match.pause()
+      closeDialog()
+      let timer = 0
+      const dismiss = (optOut = false) => {
+        window.clearTimeout(timer)
+        if (optOut) { saved.settings.tutorialOptOut = true; persist() }
+        closeDialog()
+        match?.resume()
+      }
+      const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Cómo se juega" },
+        h("h2", { class: "fp-arcade" }, "CÓMO SE JUEGA"),
+        h("p", { class: "fp-note" }, "Izquierdo (o WASD/flechas): movés al jugador que lleva el puck."),
+        h("p", { class: "fp-note" }, "Derecho: deslizá para pasar o tirar — roce suave es pase, latigazo es tiro."),
+        h("p", { class: "fp-note" }, "Tocá a un compañero (con cualquier dedo, hasta con el izquierdo) para pasarle. Un toque suelto a la derecha (o Espacio) es pase automático al mejor."),
+        h("button", { class: "fp-btn solid", "data-key": "tutorial-ok", onclick: () => dismiss(false) }, "Entendido"),
+        h("button", { class: "fp-btn", "data-key": "tutorial-never", onclick: () => dismiss(true) }, "No volver a mostrar"),
+      )
+      openModal(wrap, h("div", { class: "fp-overlay" }, box))
+      timer = window.setTimeout(() => dismiss(false), 20000)
+    }, 900)
   }
 
   function startMatch() {
@@ -422,6 +509,71 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         if (pb) { pb.disabled = true; pb.setAttribute("aria-disabled", "true") }
         endTimer = window.setTimeout(() => showEnd(wrap, r), 1600)
       },
+      onAutoPause: () => showPause(wrap),
+    })
+    match = m
+    wrap.append(matchHudBar(wrap, m))
+  }
+
+  /** Modo demo/espectador: IA vs IA, sin jugador humano. Elige dos equipos al azar y, cuando
+   *  termina, arranca otro solo — pensado como "attract mode" de arcade. Se sale desde la pausa. */
+  let demoPlaying = false
+  let demoFromBoot = false
+  /** Config del entrenamiento en curso (para "reiniciar" desde la pausa), si hay uno. */
+  let trainingPlaying: { goalie: "local" | "visita" | "ninguno" } | null = null
+  function startDemo(fromBoot = false) {
+    stopMatch()
+    demoPlaying = true
+    demoFromBoot = fromBoot
+    screen = "match"
+    const teams = allTeams(saved)
+    const a = teams[Math.floor(Math.random() * teams.length)]
+    let b = teams[Math.floor(Math.random() * teams.length)]
+    if (b.id === a.id) b = teams[(teams.indexOf(a) + 1) % teams.length]
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = teamMatchOptions(a.id, b.id)
+    const m = mountMatch(wrap, {
+      ...mo,
+      demo: true,
+      onDemoTap: () => { if (demoFromBoot) { stopMatch(); go("menu") } else startMatch() },
+      onEnd: () => {
+        endTimer = window.setTimeout(() => { if (demoPlaying && !destroyed) startDemo(demoFromBoot) }, 2400)
+      },
+    })
+    match = m
+    wrap.append(matchHudBar(wrap, m))
+  }
+
+  // ---------- entrenamiento ----------
+  const TRAINING_GOALIE_LABEL: Record<"local" | "visita" | "ninguno", string> = {
+    local: "Arquero local", visita: "Arquero visita", ninguno: "Sin arquero",
+  }
+  function trainingScreen(): HTMLElement {
+    return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
+      topBar("ENTRENAMIENTO", "#9ca3af", () => go("menu")),
+      h("section", { class: "fp-panel" },
+        h("p", { class: "fp-note" }, "Practicá tiros solo, sin rival. Elegí qué arquero tenés en cancha."),
+        h("div", { class: "fp-actions" },
+          ...(Object.keys(TRAINING_GOALIE_LABEL) as Array<"local" | "visita" | "ninguno">).map((g) =>
+            h("button", { class: "fp-btn solid", "data-key": `train-${g}`, onclick: () => startTraining(g) }, TRAINING_GOALIE_LABEL[g])),
+        ),
+      ),
+    ))
+  }
+
+  function startTraining(goalie: "local" | "visita" | "ninguno") {
+    stopMatch()
+    trainingPlaying = { goalie }
+    screen = "match"
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = matchOptions()
+    const m = mountMatch(wrap, {
+      ...mo,
+      duration: 600,
+      training: { goalie },
+      onEnd: () => { stopMatch(); go("training") },
       onAutoPause: () => showPause(wrap),
     })
     match = m
@@ -459,6 +611,12 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const m = mountMatch(wrap, {
       ...mo,
       onEnd: (r) => {
+        if (r.score[0] === r.score[1]) {
+          // En la Copa no hay empates, pero ya no hace falta rejugar el partido entero:
+          // sigue el mismo partido en muerte súbita (gol de oro). Si sigue empatado, se repite.
+          m.startSuddenDeath(SUDDEN_DEATH_SECONDS)
+          return
+        }
         const pb = wrap.querySelector<HTMLButtonElement>('[data-key="pause"]')
         if (pb) { pb.disabled = true; pb.setAttribute("aria-disabled", "true") }
         endTimer = window.setTimeout(() => showCupEnd(wrap, r), 1600)
@@ -467,6 +625,12 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     })
     match = m
     wrap.append(matchHudBar(wrap, m))
+    // El tutorial de controles sale AL ARRANCAR LA COPA (primer cruce), una vez por Copa, y se puede
+    // apagar para siempre con "No volver a mostrar". El partido suelto y el demo no lo muestran.
+    if (saved.cup && shouldShowCupTutorial(saved.settings.tutorialOptOut, saved.cup, tutorialShownForCup)) {
+      tutorialShownForCup = saved.cup.id
+      showTutorial(wrap)
+    }
   }
 
   function showCupEnd(wrap: HTMLElement, r: MatchResult) {
@@ -603,17 +767,23 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     closeDialog()
     const back = () => { closeDialog(); match?.resume() }
     const cp = cupPlaying
+    const isDemo = demoPlaying
+    const tp = trainingPlaying
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Pausa" },
-      h("h2", { class: "fp-arcade" }, "PAUSA"),
+      h("h2", { class: "fp-arcade" }, isDemo ? "DEMO EN PAUSA" : tp ? "ENTRENAMIENTO EN PAUSA" : "PAUSA"),
       h("button", { class: "fp-btn solid", "data-key": "resume", onclick: back }, "Continuar"),
-      h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
-        { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
+      isDemo
+        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startDemo() }, "Otro partido demo")
+        : tp
+        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie) }, "Reiniciar entrenamiento")
+        : h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
+            { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
+            { label: "Cancelar", onClick: () => showPause(wrap) },
+          ], wrap) }, "Reiniciar partido"),
+      h("button", { class: "fp-btn rd", "data-key": "quit", onclick: () => showDialog(isDemo ? "¿Salir del modo demo?" : tp ? "¿Salir del entrenamiento?" : cp ? "¿Salir a la Copa?" : "¿Salir al menú?", isDemo ? "Se corta el partido demo." : tp ? "Se corta la práctica." : "Se pierde el partido en curso.", [
+        { label: "Salir", danger: true, onClick: () => { stopMatch(); go(cp ? "cup" : tp ? "training" : "menu") } },
         { label: "Cancelar", onClick: () => showPause(wrap) },
-      ], wrap) }, "Reiniciar partido"),
-      h("button", { class: "fp-btn rd", "data-key": "quit", onclick: () => showDialog(cp ? "¿Salir a la Copa?" : "¿Salir al menú?", "Se pierde el partido en curso.", [
-        { label: "Salir", danger: true, onClick: () => { stopMatch(); go(cp ? "cup" : "menu") } },
-        { label: "Cancelar", onClick: () => showPause(wrap) },
-      ], wrap) }, cp ? "Salir a la Copa" : "Salir al menú"),
+      ], wrap) }, isDemo || tp ? "Salir al menú" : cp ? "Salir a la Copa" : "Salir al menú"),
     )
     openModal(wrap, h("div", { class: "fp-overlay" }, box))
   }
@@ -644,18 +814,33 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   // ---------- teclado (escritorio) ----------
+  // Shift + 0-1-7-8-9 (en la pantalla de selección de equipos) desbloquea el modo entrenamiento
+  // sin necesidad de ganar la Copa — es un atajo de prueba, no algo que se explique en pantalla.
+  const TRAINING_CODE = "01789"
+  let codeBuf = ""
   const onKey = (e: KeyboardEvent) => {
+    const digit = digitFromCode(e.code)
+    if (screen === "setup" && e.shiftKey && digit !== null) {
+      // e.code y no e.key: con Shift, e.key es "!" ")" etc. y el código nunca coincidía
+      codeBuf = (codeBuf + digit).slice(-TRAINING_CODE.length)
+      if (codeBuf === TRAINING_CODE && !saved.settings.trainingUnlocked) {
+        unlockTraining()
+      }
+      return
+    }
     if (e.key !== "Escape") return
     if (screen === "match") {
       const wrap = view.querySelector<HTMLElement>(".fp-match")
       if (!wrap || !match || match.ended) return
       if (dialog && match.paused) { closeDialog(); match.resume() } else showPause(wrap)
-    } else if (screen === "setup" || screen === "credits" || screen === "cup") go("menu")
+    } else if (screen === "setup" || screen === "credits" || screen === "cup" || screen === "training") go("menu")
     else if (screen === "editor") go(editing ? "setup" : "menu")
   }
   document.addEventListener("keydown", onKey)
 
-  render()
+  // Arranca directo en modo demo (attract mode) en vez del menú — tocar la pantalla durante
+  // este demo de arranque va al menú, no a un partido (eso sí pasa si abrís el demo desde el botón).
+  startDemo(true)
 
   return {
     destroy() {

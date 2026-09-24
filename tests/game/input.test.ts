@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { TouchInput } from "../../lib/game/input"
+import { TouchInput, digitFromCode, isShootKey, keyboardVector } from "../../lib/game/input"
 
 const W = 800
 const H = 360
@@ -49,7 +49,7 @@ test("toque corto sin deslizar = tap", () => {
   const i = mk()
   i.down(5, 600, 200, 1)
   const ev = i.up(5, 603, 201, 1.12)
-  assert.deepEqual(ev, { kind: "tap" })
+  assert.deepEqual(ev, { kind: "tap", x: 603, y: 201 }) // el toque ahora lleva su posición
 })
 
 test("dedo apoyado mucho rato sin moverse no dispara nada", () => {
@@ -141,4 +141,82 @@ test("cancelar limpia el estado y la velocidad", () => {
   i.down(2, 600, 200, 0)
   i.cancel(2)
   assert.equal(i.aim, null)
+})
+
+test("teclado: WASD y flechas dan el mismo vector, diagonal normalizada", () => {
+  assert.deepEqual(keyboardVector(new Set()), { x: 0, y: 0 })
+  assert.deepEqual(keyboardVector(new Set(["KeyD"])), { x: 1, y: 0 })
+  assert.deepEqual(keyboardVector(new Set(["ArrowRight"])), { x: 1, y: 0 })
+  assert.deepEqual(keyboardVector(new Set(["KeyA"])), { x: -1, y: 0 })
+  assert.deepEqual(keyboardVector(new Set(["KeyW"])), { x: 0, y: -1 })
+  assert.deepEqual(keyboardVector(new Set(["KeyS"])), { x: 0, y: 1 })
+  const diag = keyboardVector(new Set(["KeyW", "KeyD"]))
+  assert.ok(Math.abs(Math.hypot(diag.x, diag.y) - 1) < 1e-9, "la diagonal no debe ser más rápida")
+  assert.ok(diag.x > 0 && diag.y < 0)
+})
+
+test("teclado: teclas opuestas se cancelan", () => {
+  assert.deepEqual(keyboardVector(new Set(["KeyA", "KeyD"])), { x: 0, y: 0 })
+  assert.deepEqual(keyboardVector(new Set(["KeyW", "KeyS", "ArrowLeft", "ArrowRight"])), { x: 0, y: 0 })
+})
+
+test("teclado: teclas ajenas al movimiento no hacen nada", () => {
+  assert.deepEqual(keyboardVector(new Set(["ShiftLeft", "Tab"])), { x: 0, y: 0 })
+})
+
+test("teclado: Espacio es la tecla de tiro/pase, ninguna otra lo es", () => {
+  assert.equal(isShootKey("Space"), true)
+  assert.equal(isShootKey("Enter"), false)
+  assert.equal(isShootKey("KeyW"), false)
+})
+
+test("atajo secreto: los dígitos se leen de la tecla física, así funciona con Shift apretado", () => {
+  for (let d = 0; d <= 9; d++) {
+    assert.equal(digitFromCode(`Digit${d}`), String(d))
+    assert.equal(digitFromCode(`Numpad${d}`), String(d))
+  }
+  for (const c of ["KeyA", "Space", "ShiftLeft", "Escape", "NumpadAdd", "Digit", "Digit10", ""]) assert.equal(digitFromCode(c), null)
+})
+
+// ---------- pase de un dedo: tocar al compañero con el mismo dedo del joystick ----------
+
+test("pase de un dedo: un toque rápido del dedo de movimiento es un tap estricto con su posición", () => {
+  const i = mk()
+  i.down(1, 150, 200, 0)
+  const ev = i.up(1, 152, 201, 0.12)
+  assert.deepEqual(ev, { kind: "tap", x: 152, y: 201, strict: true })
+  assert.equal(i.moveX, 0)
+  assert.equal(i.stick, null)
+})
+
+test("pase de un dedo: si el dedo de movimiento arrastra el joystick NO es un pase", () => {
+  const i = mk()
+  i.down(1, 150, 200, 0)
+  i.move(1, 150 + i.radius, 200, 0.05)
+  assert.equal(i.up(1, 150 + i.radius, 200, 0.1), null)
+})
+
+test("pase de un dedo: arrastrar y volver al punto de apoyo tampoco cuenta (fue un movimiento, no un toque)", () => {
+  const i = mk()
+  i.down(1, 150, 200, 0)
+  i.move(1, 150 + i.radius, 200, 0.04)
+  i.move(1, 150, 200, 0.08)
+  assert.equal(i.up(1, 150, 200, 0.12), null)
+})
+
+test("pase de un dedo: apoyar el dedo de movimiento mucho rato y soltar no es un pase", () => {
+  const i = mk()
+  i.down(1, 150, 200, 0)
+  assert.equal(i.up(1, 151, 200, 1.5), null)
+})
+
+test("pase de un dedo: mientras el dedo de movimiento está apoyado, el joystick sigue funcionando y el otro dedo pasa igual", () => {
+  const i = mk()
+  i.down(1, 150, 200, 0)
+  i.move(1, 150 + i.radius, 200, 0.02)
+  assert.ok(i.moveX > 0.9)
+  i.down(2, 600, 200, 0.1)
+  const ev = i.up(2, 602, 200, 0.2)
+  assert.deepEqual(ev, { kind: "tap", x: 602, y: 200 })
+  assert.ok(i.moveX > 0.9, "el joystick no se interrumpe")
 })

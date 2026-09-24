@@ -23,6 +23,17 @@ export class Camera {
 
   reset() { this.ready = false }
 
+  /** Encuadre fijo, sin seguir al puck — para las vistas "cancha completa" y "3/4". */
+  frame(vw: number, vh: number, width: number, cx: number, cy: number) {
+    this.vw = Math.max(1, vw)
+    this.vh = Math.max(1, vh)
+    this.width = width
+    this.cx = cx
+    this.cy = cy
+    this.ready = true
+    this.clampToRink()
+  }
+
   update(dt: number, w: World, controlledId: string | null, vw: number, vh: number) {
     this.vw = Math.max(1, vw)
     this.vh = Math.max(1, vh)

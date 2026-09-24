@@ -139,8 +139,12 @@ export function collectContacts(x: number, y: number, r: number, solidMouth: boo
       if (c) out.push(c)
     }
     if (creaseBlock) {
-      c = circleContact(x, y, r, g.lineX, g.cy, CREASE_RADIUS, "net")
-      if (c) out.push(c)
+      // Semicírculo SOLO del lado de la cancha (nunca detrás de la red: ahí se puede envolver).
+      const inFront = (x - g.lineX) * g.dir <= 0
+      if (inFront) {
+        c = circleContact(x, y, r, g.lineX, g.cy, CREASE_RADIUS, "net")
+        if (c) out.push(c)
+      }
     }
   }
   return out

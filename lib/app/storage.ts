@@ -15,6 +15,10 @@ export interface Settings {
   visitId: string
   leftHanded: boolean
   sound: boolean
+  /** "No volver a mostrar" el tutorial de controles (que sale al arrancar una Copa). */
+  tutorialOptOut: boolean
+  /** Modo entrenamiento desbloqueado (ganando la Copa, o con el atajo secreto). */
+  trainingUnlocked: boolean
 }
 
 export interface Saved {
@@ -31,6 +35,8 @@ export const DEFAULT_SETTINGS: Settings = {
   visitId: DEFAULT_TEAMS[1].id,
   leftHanded: false,
   sound: true,
+  tutorialOptOut: false,
+  trainingUnlocked: false,
 }
 
 /** localStorage si existe y funciona (modo privado, cookies bloqueadas, SSR => null). */
@@ -91,6 +97,10 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.visitId === "string") out.settings.visitId = s.visitId
     if (typeof s.leftHanded === "boolean") out.settings.leftHanded = s.leftHanded
     if (typeof s.sound === "boolean") out.settings.sound = s.sound
+    if (typeof s.tutorialOptOut === "boolean") out.settings.tutorialOptOut = s.tutorialOptOut
+    // migración: quien ya lo había visto (versión anterior) no lo necesita de nuevo
+    else if (s.seenTutorial === true) out.settings.tutorialOptOut = true
+    if (typeof s.trainingUnlocked === "boolean") out.settings.trainingUnlocked = s.trainingUnlocked
     out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)
   } catch {

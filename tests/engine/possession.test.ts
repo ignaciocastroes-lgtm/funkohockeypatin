@@ -114,7 +114,7 @@ test("tras ganar el puck hay gracia: el rival no puede robarlo instantáneamente
   void a
 })
 
-test("gol: marcador, pausa, y saque inicial automático", () => {
+test("gol: marcador, pausa, y el que recibió el gol sale con la pelota (no saque neutral)", () => {
   const w = cleanWorld()
   shootPuck(w, 20, 10, 25, 0)
   const ev = run(w, 3, (x) => x.phase === "goal")
@@ -122,8 +122,7 @@ test("gol: marcador, pausa, y saque inicial automático", () => {
   assert.ok(ev.some((e) => e.type === "goal" && e.side === 0))
   run(w, 2.4)
   assert.equal(w.phase, "play")
-  assert.ok(Math.abs(w.puck.x - RINK.length / 2) < 1e-9 && Math.abs(w.puck.y - RINK.width / 2) < 1e-9)
-  assert.equal(w.puck.carrierId, null)
+  assert.equal(w.puck.carrierId, "V1", "al que le hicieron el gol (lado 1) le toca sacar con la pelota")
 })
 
 test("el reloj llega a 0 pero concede tiempo de gracia antes de terminar", () => {
@@ -190,7 +189,10 @@ test("portero: ataja lo de frente y lo flojo; solo un tiro fuerte y bien colocad
   assert.ok(debil.rate <= 0.05, `tiros flojos a la esquina: ${(debil.rate * 100).toFixed(0)}% gol`)
 
   const fuerte = goalieBatch(60, (r) => ({ sx: 27 + r() * 3, sy: 9 + r() * 2, ty: g.cy + (r() < 0.5 ? -0.9 : 0.9), sp: 24 + r() * 8 }))
-  assert.ok(fuerte.rate >= 0.25 && fuerte.rate <= 0.75, `tiros fuertes a la esquina: ${(fuerte.rate * 100).toFixed(0)}% gol (esperado 25-75%)`)
+  // El arquero creció (GOALIE.radius 0.5->0.58, por el equipo) a propósito: tapa un poco más de
+  // esquina que antes. Sigue siendo baterle, solo que menos seguido — piso más bajo, no un cambio
+  // de diseño.
+  assert.ok(fuerte.rate >= 0.15 && fuerte.rate <= 0.75, `tiros fuertes a la esquina: ${(fuerte.rate * 100).toFixed(0)}% gol (esperado 15-75%)`)
 })
 
 test("kickoff restaura posiciones sin tocar marcador", () => {

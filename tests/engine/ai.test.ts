@@ -180,3 +180,37 @@ test("dificultad: un rival hábil se impone a uno torpe (misma semilla, mismo 'h
   for (let seed = 1; seed <= 6; seed++) { weak += match(0.2, seed); strong += match(0.9, seed) }
   assert.ok(weak > strong, `el humano ingenuo debe irle mejor contra el torpe (${weak}) que contra el hábil (${strong})`)
 })
+
+test("defendiendo: cubre más de cerca al rival peligroso cerca del arco que al mismo rival lejos", () => {
+  const own = GOALS[0] // el equipo que defiende (L) cuida esta portería, en lineX chico
+
+  function gapFor(dangerX: number): number {
+    const w = makeWorld({ teamSize: 4 })
+    const v1 = place(w, "V1", 20, 10)
+    v1.pickupCooldown = 0
+    shootPuck(w, 19.2, 10, 0, 0) // V1 "lleva" el puck (portador rival, quieto)
+    place(w, "V2", dangerX, 14) // el rival a cubrir: cerca o lejos del arco según el caso
+    place(w, "V3", 35, 2) // lejos de todo, para que nunca sea el más peligroso
+    place(w, "V4", 35, 18)
+    place(w, "L1", 12, 10); place(w, "L2", 14, 6); place(w, "L3", 14, 14); place(w, "L4", 9, 10)
+    const ai = new TeamAI({ seed: 7, skill: [0.8, 0.8] })
+    playAI(w, ai, 3, null, (ww) => { const v = findSkater(ww, "V1"); if (v) { v.vx = 0; v.vy = 0; v.inputX = 0; v.inputY = 0 } })
+    const v2 = findSkater(w, "V2")!
+    return Math.min(...["L1", "L2", "L3", "L4"].map((id) => Math.hypot(findSkater(w, id)!.x - v2.x, findSkater(w, id)!.y - v2.y)))
+  }
+
+  const closeGap = gapFor(own.lineX + 3) // V2 pegado al arco: peligro real
+  const farGap = gapFor(own.lineX + 16) // V2 lejos: todavía no es una amenaza inmediata
+  assert.ok(closeGap < farGap, `debería cubrirlo más de cerca cuanto más cerca del arco está (cerca ${closeGap.toFixed(1)}, lejos ${farGap.toFixed(1)})`)
+})
+
+test("modo demo: IA vs IA sin humano (humanId null) llega a anotar goles de verdad", () => {
+  let totalGoals = 0
+  for (const seed of [11, 12, 13]) {
+    const w = createWorld({ duration: 180 })
+    const ai = new TeamAI({ seed })
+    playAI(w, ai, 180, null)
+    totalGoals += w.score[0] + w.score[1]
+  }
+  assert.ok(totalGoals >= 2, `en 3 partidos demo de 3 minutos debería haber al menos algún gol (hubo ${totalGoals})`)
+})

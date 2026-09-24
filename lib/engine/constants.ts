@@ -33,10 +33,28 @@ export const PUCK = {
   boardRestitution: 0.72,
   postRestitution: 0.6,
   goalieRestitution: 0.5,
-  /** Restitución contra jugadores (rebote, no atrapada). */
-  skaterRestitution: 0.55,
+  /** Restitución contra jugadores (rebote, no atrapada). Baja a propósito: una bocha de ~160 g no
+   *  sale disparada porque alguien la roce sin querer — el tiro deliberado no usa esto, va directo
+   *  por velocidad en `kick()`. */
+  skaterRestitution: 0.3,
   /** Cuánto se avanza como máximo por sub-paso (m). Garantiza que no atraviese postes ni líneas. */
   maxSubstep: 0.07,
+} as const
+
+/**
+ * Trayectoria semi-curva: un tiro tomado moviéndose de costado le pone un poco de efecto, como un
+ * latigazo real. Es una curvatura de la DIRECCIÓN (rad/s), no una fuerza lateral — más simple y
+ * siempre estable, y decae con el vuelo así no da una vuelta imposible en un tiro largo.
+ */
+export const CURVE = {
+  /** Velocidad de patada a partir de la cual un tiro puede llevar efecto (los pases no curvan). */
+  minShotSpeed: 15,
+  /** Cuánto efecto (rad/s) le da cada m/s de velocidad lateral del patinador al tirar. */
+  spinPerLateralSpeed: 0.09,
+  /** Tope de curvatura (rad/s): ni el latigazo más de costado da una vuelta cerrada. */
+  maxSpin: 1.1,
+  /** El efecto se apaga con el vuelo (1/s): un tiro largo empieza a enderezarse. */
+  spinDecay: 0.9,
 } as const
 
 export interface SurfaceParams {
@@ -84,10 +102,16 @@ export const SKATER = {
   pickupReach: 0.35,
   /** Alcance extra para robar un puck llevado (m). */
   stealReach: 0.12,
+  /** Robar por la espalda no se puede: el rival tiene que venir dentro de este cono desde donde
+   *  mira el portador (medio ángulo, rad). ~55° = 110° de cono total, delante del pecho. */
+  stealConeHalfAngle: (55 * Math.PI) / 180,
   /** Velocidad relativa máxima a la que se puede controlar un puck (m/s). Más rápido = rebota. */
   trapMaxRelSpeed: 15,
   /** El que patea no puede recoger su propio pase durante este tiempo (s). */
   kickCooldown: 0.35,
+  /** A quien le rebota el puck encima no lo puede atrapar de inmediato (s): un golpe fuerte no se
+   *  controla al toque solo porque la física ya lo frenó lo suficiente un instante después. */
+  deflectCooldown: 0.18,
   /** Tras ganar el puck no te lo pueden robar durante este tiempo (s). */
   controlGrace: 0.6,
   /** Tras perder el puck (robo/golpe) no puedes recuperarlo durante este tiempo (s). */
@@ -104,7 +128,8 @@ export const SKATER = {
 } as const
 
 export const GOALIE = {
-  radius: 0.5,
+  /** Un poco más que los patinadores: el equipo (careta, guantes, pads) abulta el radio real. */
+  radius: 0.58,
   maxSpeed: 4.5,
   accel: 26,
   /** Tiempo muerto (s) desde que sale un disparo hasta que el portero empieza a reaccionar. */
@@ -138,10 +163,19 @@ export const RULES = {
   maxBenched: 2,
   /** Nunca se deja a un equipo con menos patinadores que esto. */
   minSkaters: 2,
+  /** Cambios por cansancio permitidos por equipo por partido (no confundir con maxBenched). */
+  maxFatigueSubs: 3,
+  /** Cada tantas faltas acumuladas de un equipo, el otro cobra un penal (tu regla: cada 3; el
+   *  reglamento real de hockey patín usa 10 y después cada 5 — este es tu arcade, no el oficial). */
+  foulsPerPenalty: 3,
+  /** Distancia del penal a la línea de gol (m) — la misma que usa el reglamento real. */
+  penaltySpot: 7.4,
 } as const
 
 export const MATCH = {
   teamSize: 4,
+  /** Plantilla total (en pista + suplentes por cansancio). */
+  rosterSize: 6,
   /** Duración por defecto de un partido (s). */
   duration: 300,
   goalPause: 2.2,
@@ -149,6 +183,29 @@ export const MATCH = {
    *  antes de pitar el final, para que una jugada ya en marcha (un tiro, un rebote) pueda terminar. */
   timeOnGrace: 1.5,
 } as const
+
+/**
+ * Energía. "Patinar a velocidad constante no cansa; acelerar sí": solo se gasta mientras el
+ * patinador todavía está ganando velocidad (empujando hacia su máximo), no mientras la mantiene.
+ */
+export const STAMINA = {
+  max: 100,
+  /** Gasto (unidades/s) mientras acelera de verdad (input fuerte y por debajo de su tope). */
+  drainPerSecond: 5,
+  /** Recuperación lenta en pista mientras no está acelerando (desliza/coast). */
+  iceRegenPerSecond: 3,
+  /** Recuperación en la banca de cansancio: rápida, a propósito. */
+  restRegenPerSecond: 34,
+  /** Velocidad de patada (m/s) a partir de la cual un tiro cuenta como "super tiro". */
+  superShotMinSpeed: 24,
+  /** Si no hay energía para el super tiro, se limita a esta potencia (tiro fuerte normal, no super). */
+  superShotCappedSpeed: 20,
+  /** Bajo este % se ofrece/hace el cambio por cansancio si hay suplente fresco y cambios disponibles. */
+  subThresholdPct: 25,
+} as const
+
+/** Costo en unidades (no fracción) del super tiro, derivado de STAMINA.max. */
+export const SUPER_SHOT_COST = STAMINA.max / 2
 
 export const CAMERA = {
   /** Ancho visible base (m). */
