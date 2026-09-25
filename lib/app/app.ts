@@ -3,7 +3,7 @@ import { digitFromCode } from "../game/input"
 import { shouldShowCupTutorial } from "./tutorial"
 import type { MatchHandle, MatchOptions, MatchResult, Nivel } from "../game/match"
 import { DURATIONS, allTeams, load, normalize, save } from "./storage"
-import type { Saved } from "./storage"
+import type { Saved, Settings } from "./storage"
 import { CSS } from "./styles"
 import {
   CATEGORIES, CATEGORY_LABEL, CRESTS, KINDS, KIND_LABEL, MAX_CUSTOM_TEAMS, NAME_MAX, PLAYER_NAME_MAX, SURFACES, SURFACE_HINT, SURFACE_LABEL,
@@ -11,7 +11,7 @@ import {
 } from "./teams"
 import type { Category, Team, TeamDraft } from "./teams"
 import { newCup, nextMatch, recordResult } from "./cup"
-import type { Cup, CupMatch, MatchSlot } from "./cup"
+import type { Cup, MatchSlot } from "./cup"
 import type { SkaterKind, Surface } from "../engine"
 
 /**
@@ -56,8 +56,6 @@ const NIVELES: Array<{ value: Nivel; label: string }> = [
 ]
 const NIVEL_LABEL: Record<Nivel, string> = { facil: "Fácil", normal: "Normal", dificil: "Difícil" }
 const SWATCHES = ["#10b981", "#a855f7", "#f472b6", "#22c55e", "#f97316", "#14b8a6", "#e11d48", "#94a3b8"]
-/** Desempate de Copa: muerte súbita, gol de oro. Si sigue empatado al cabo, se repite otro período. */
-const SUDDEN_DEATH_SECONDS = 60
 
 const fmtDur = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 
@@ -123,6 +121,22 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   // ---------- pantallas ----------
   function corners() {
     return ["tl", "tr", "bl", "br"].map((c) => h("div", { class: `fp-corner ${c}`, "aria-hidden": "true" }))
+  }
+
+  /** Escena de festejo: el equipo saltando con la copa y un cartel de "¡CAMPEONES!" — se usa tanto
+   *  al terminar la final como en la pantalla de la llave, una vez que la Copa ya tiene dueño. */
+  function celebrationScene(team: Team): HTMLElement {
+    const c = team.color
+    const players = [0, 1, 2, 3, 4].map((i) =>
+      h("span", { class: "fp-cel-player", style: `animation-delay:${(i * 0.11).toFixed(2)}s`, "aria-hidden": "true" }, "🧍"))
+    const confetti = Array.from({ length: 14 }, (_, i) =>
+      h("span", { class: "fp-cel-confetti", style: `left:${(i * 7 + 2) % 96}%;animation-delay:${(i * 0.18).toFixed(2)}s;background:${SWATCHES[i % SWATCHES.length]}`, "aria-hidden": "true" }))
+    return h("div", { class: "fp-celebration", role: "img", "aria-label": `${team.name}, campeón de la Copa` },
+      ...confetti,
+      h("div", { class: "fp-cel-banner", style: `--c:${c}` }, "¡CAMPEONES!"),
+      h("div", { class: "fp-cel-stage" }, players[0], players[1], h("span", { class: "fp-cel-trophy", "aria-hidden": "true" }, "🏆"), players[2], players[3]),
+      h("p", { class: "fp-cel-team", style: `color:${c}` }, team.name),
+    )
   }
 
   function menuScreen(): HTMLElement {
@@ -229,6 +243,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         segmented<number>("Duración", "dur", DURATIONS.map((d) => ({ value: d, label: fmtDur(d) })), s.duration, (v) => { s.duration = v; persist(); render() }),
         segmented<string>("Dedos", "hand", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => { s.leftHanded = v === "l"; persist(); render() }),
         segmented<string>("Sonido", "snd", [{ value: "on", label: "Con sonido" }, { value: "off", label: "Silencio" }], s.sound ? "on" : "off", (v) => { s.sound = v === "on"; persist(); render() }),
+        segmented<Settings["music"]>("Música de fondo", "music", [{ value: "on", label: "Prendida" }, { value: "low", label: "Atenuada" }, { value: "off", label: "Apagada" }], s.music, (v) => { s.music = v; persist(); render() }),
         h("p", { class: "fp-note" }, `Se juega en la pista del local: ${SURFACE_LABEL[local.surface].toLowerCase()} (${SURFACE_HINT[local.surface].toLowerCase()}).`),
       ),
       h("div", { class: "fp-sticky" },
@@ -357,6 +372,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       h("p", { style: "margin:0;font-size:clamp(14px,2.6vw,20px);line-height:1.8" },
         "Desarrollo original: ", h("b", { style: "color:#facc15" }, "Ignacio"), h("br"),
         "Motor físico y sanciones: ", h("b", { style: "color:#22d3ee" }, "Liga Funko-Patín Team"), h("br"),
+        "Herramientas de prueba: ", h("b", { style: "color:#a78bfa" }, "Playwright"), h("br"),
         "Pista: ", h("b", { style: "color:#ea580c" }, "40 × 20 m, reglamentaria")),
       h("p", { style: "margin:0;font-size:clamp(13px,2.4vw,18px);line-height:1.8;color:rgba(255,255,255,.85)" },
         "Marcador oficial: ", h("b", { style: "color:#4ade80" }, "ardisport.cl"), h("br"),
@@ -410,7 +426,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   // ---------- partido ----------
-  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "nivel" | "duration" | "leftHanded" | "sound" | "debug"> {
+  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "nivel" | "duration" | "leftHanded" | "sound" | "music" | "debug"> {
     const s = saved.settings
     const local = teamById(localId)
     const visit = teamById(visitId)
@@ -423,6 +439,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       duration: opts.durationOverride ?? s.duration,
       leftHanded: s.leftHanded,
       sound: s.sound,
+      music: s.music,
       debug: opts.debug,
     }
   }
@@ -439,10 +456,13 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     trainingPlaying = null
   }
 
-  /** Barra fija de controles (pausa / pantalla completa / sonido) sobre el partido en curso. */
+  /** Barra fija de controles (pausa / pantalla completa / sonido / música) sobre el partido en curso. */
   function matchHudBar(wrap: HTMLElement, m: MatchHandle): HTMLElement {
     const viewLabel = (v: string) => (v === "full" ? "TOT" : v === "three-quarter" ? "3/4" : "SEG")
     const viewName = (v: string) => (v === "full" ? "cancha completa" : v === "three-quarter" ? "3/4 de cancha" : "seguir la jugada")
+    const MUSIC_ICON: Record<Settings["music"], string> = { on: "🎉", low: "🔉", off: "🔇" }
+    const MUSIC_NAME: Record<Settings["music"], string> = { on: "Música: prendida", low: "Música: atenuada", off: "Música: apagada" }
+    const MUSIC_NEXT: Record<Settings["music"], Settings["music"]> = { on: "low", low: "off", off: "on" }
     return h("div", { class: "fp-hud" },
       h("button", { class: "fp-btn", "aria-label": "Pausa", "data-key": "pause", onclick: () => showPause(wrap) }, "❚❚"),
       h("button", { class: "fp-btn view", "aria-label": `Vista: ${viewName(m.viewMode)} — tocá para cambiar`, "data-key": "view",
@@ -463,6 +483,15 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
           b.setAttribute("aria-pressed", String(saved.settings.sound))
           persist()
         } }, saved.settings.sound ? "🔊" : "🔇"),
+      h("button", { class: "fp-btn", "aria-label": MUSIC_NAME[saved.settings.music], "data-key": "music",
+        onclick: (e: Event) => {
+          saved.settings.music = MUSIC_NEXT[saved.settings.music]
+          m.setMusic(saved.settings.music)
+          const b = e.currentTarget as HTMLElement
+          b.textContent = MUSIC_ICON[saved.settings.music]
+          b.setAttribute("aria-label", MUSIC_NAME[saved.settings.music])
+          persist()
+        } }, MUSIC_ICON[saved.settings.music]),
     )
   }
 
@@ -497,6 +526,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
 
   function startMatch() {
     stopMatch()
+    maybeAutoFullscreen()
     screen = "match"
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
@@ -520,7 +550,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   let demoPlaying = false
   let demoFromBoot = false
   /** Config del entrenamiento en curso (para "reiniciar" desde la pausa), si hay uno. */
-  let trainingPlaying: { goalie: "local" | "visita" | "ninguno" } | null = null
+  let trainingPlaying: { goalie: "local" | "visita" | "ninguno"; penalties?: boolean } | null = null
   function startDemo(fromBoot = false) {
     stopMatch()
     demoPlaying = true
@@ -528,8 +558,11 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     screen = "match"
     const teams = allTeams(saved)
     const a = teams[Math.floor(Math.random() * teams.length)]
-    let b = teams[Math.floor(Math.random() * teams.length)]
-    if (b.id === a.id) b = teams[(teams.indexOf(a) + 1) % teams.length]
+    // Antes: se sorteaban los dos por separado y se "corregía" si coincidían — con mala suerte en el
+    // segundo sorteo podía volver a tocar el mismo. Ahora `b` sale de la lista SIN `a`: es imposible
+    // que salga el mismo equipo dos veces (mientras haya 2 o más equipos).
+    const rest = teams.filter((t) => t.id !== a.id)
+    const b = rest.length ? rest[Math.floor(Math.random() * rest.length)] : a
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
     const mo = teamMatchOptions(a.id, b.id)
@@ -559,12 +592,20 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
             h("button", { class: "fp-btn solid", "data-key": `train-${g}`, onclick: () => startTraining(g) }, TRAINING_GOALIE_LABEL[g])),
         ),
       ),
+      h("section", { class: "fp-panel" },
+        h("h3", {}, "Penales · súper tiros"),
+        h("p", { class: "fp-note" }, "Mano a mano contra el arquero rival, un penal tras otro, siempre con el tanque de energía lleno — para practicar la puntería y el súper tiro sin depender del cansancio."),
+        h("div", { class: "fp-actions" },
+          h("button", { class: "fp-btn ye", "data-key": "train-penalties", onclick: () => startTraining("visita", true) }, "Practicar penales"),
+        ),
+      ),
     ))
   }
 
-  function startTraining(goalie: "local" | "visita" | "ninguno") {
+  function startTraining(goalie: "local" | "visita" | "ninguno", penalties = false) {
     stopMatch()
-    trainingPlaying = { goalie }
+    maybeAutoFullscreen()
+    trainingPlaying = { goalie, penalties }
     screen = "match"
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
@@ -572,7 +613,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const m = mountMatch(wrap, {
       ...mo,
       duration: 600,
-      training: { goalie },
+      training: { goalie, penalties },
       onEnd: () => { stopMatch(); go("training") },
       onAutoPause: () => showPause(wrap),
     })
@@ -582,7 +623,10 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
 
   // ---------- copa ----------
   /** Equipos elegidos en la pantalla de armado de la Copa (no persiste hasta sortear). */
-  let cupPick: string[] = allTeams(saved).slice(0, 4).map((t) => t.id)
+  /** Mi equipo elegido para la próxima Copa (siempre va primero en `teamIds`: así queda "local" en
+   *  cada cruce que juegue, sin tener que tocar nada de la lógica del bracket en cup.ts). */
+  let myTeamPick: string | null = allTeams(saved)[0]?.id ?? null
+  let cupNivel: Nivel = saved.settings.nivel
   /** Qué cruce de la Copa se está jugando ahora mismo, si hay uno. */
   let cupPlaying: { which: MatchSlot; home: string; away: string } | null = null
 
@@ -595,14 +639,9 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     return a
   }
 
-  function toggleCupPick(id: string) {
-    if (cupPick.includes(id)) cupPick = cupPick.filter((x) => x !== id)
-    else if (cupPick.length < 4) cupPick = [...cupPick, id]
-    render()
-  }
-
   function startCupMatch(which: MatchSlot, home: string, away: string) {
     stopMatch()
+    maybeAutoFullscreen()
     cupPlaying = { which, home, away }
     screen = "match"
     const wrap = h("div", { class: "fp-match" })
@@ -612,9 +651,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       ...mo,
       onEnd: (r) => {
         if (r.score[0] === r.score[1]) {
-          // En la Copa no hay empates, pero ya no hace falta rejugar el partido entero:
-          // sigue el mismo partido en muerte súbita (gol de oro). Si sigue empatado, se repite.
-          m.startSuddenDeath(SUDDEN_DEATH_SECONDS)
+          startShootout(wrap, which, home, away, r.score)
           return
         }
         const pb = wrap.querySelector<HTMLButtonElement>('[data-key="pause"]')
@@ -631,6 +668,35 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       tutorialShownForCup = saved.cup.id
       showTutorial(wrap)
     }
+  }
+
+  /** Empate en la Copa: tanda de penales (3 por lado, mano a mano) en vez de rejugar todo el
+   *  partido — es un mini-partido nuevo, aparte, dedicado solo a la tanda. */
+  function startShootout(prevWrap: HTMLElement, which: MatchSlot, home: string, away: string, regularScore: [number, number]) {
+    stopMatch()
+    screen = "match"
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = teamMatchOptions(home, away)
+    const m = mountMatch(wrap, {
+      ...mo,
+      shootout: true,
+      onShootoutEnd: (sr) => {
+        const finalScore: [number, number] = [regularScore[0] + sr.made[0], regularScore[1] + sr.made[1]]
+        const winnerName = teamById(sr.winner === 0 ? home : away).name
+        endTimer = window.setTimeout(() => {
+          showDialog(
+            "¡Definido por penales!",
+            `${winnerName} ganó la tanda ${Math.max(...sr.made)}-${Math.min(...sr.made)}.`,
+            [{ label: "Seguir", primary: true, onClick: () => showCupEnd(wrap, { score: finalScore, fouls: [0, 0], steals: [0, 0], passes: [0, 0], shots: [0, 0] }) }],
+          )
+        }, 900)
+      },
+      onAutoPause: () => showPause(wrap),
+    })
+    match = m
+    cupPlaying = { which, home, away }
+    wrap.append(matchHudBar(wrap, m))
   }
 
   function showCupEnd(wrap: HTMLElement, r: MatchResult) {
@@ -662,7 +728,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const winnerT = teamById(winnerId)
     const champion = after.championId
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Fin del partido de Copa", style: "max-width:520px" },
-      h("p", { class: "fp-result fp-arcade", style: "color:#facc15" }, champion ? "¡CAMPEÓN!" : "AVANZA"),
+      champion ? celebrationScene(teamById(champion)) : h("p", { class: "fp-result fp-arcade", style: "color:#facc15" }, "AVANZA"),
       h("div", { class: "fp-score" }, h("span", { style: `color:${lc}` }, String(r.score[0])), h("span", { style: "font-size:.6em;opacity:.7" }, "-"), h("span", { style: `color:${vc}` }, String(r.score[1]))),
       h("p", { style: "margin:0;text-align:center;font-size:14px" }, champion ? `${teamById(champion).name} se queda con la Copa.` : `${winnerT.name} pasa a la siguiente ronda.`),
       h("div", { class: "fp-row" },
@@ -673,17 +739,64 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     openModal(wrap, h("div", { class: "fp-overlay" }, box))
   }
 
-  function cupMatchRow(label: string, m: CupMatch): HTMLElement {
-    const home = m.home ? teamById(m.home) : null
-    const away = m.away ? teamById(m.away) : null
-    return h("section", { class: "fp-panel", style: "display:flex;flex-direction:column;gap:8px" },
-      h("h4", { style: "margin:0;opacity:.75;font-size:12px;letter-spacing:.08em" }, label),
-      h("div", { style: "display:flex;justify-content:space-between;align-items:center;gap:10px" },
-        h("b", { style: `color:${home?.color ?? "#9ca3af"}` }, home?.name ?? "?"),
-        h("span", { style: "opacity:.8;font-size:13px" }, m.played && m.score ? `${m.score[0]} - ${m.score[1]}` : "vs"),
-        h("b", { style: `color:${away?.color ?? "#9ca3af"}` }, away?.name ?? "?"),
-      ),
-    )
+  /** Bracket real (SVG, con líneas) en vez de la lista apilada de antes — mi equipo (`teamIds[0]`)
+   *  queda resaltado con un aro en su color en cada casillero donde aparece. */
+  function cupBracketSvg(cup: Cup): HTMLElement {
+    const W = 360, H = 360
+    const boxW = 96, boxH = 30
+    const leftX = 4, midX = 132, rightX = 260
+    const rowY = [18, 74, 216, 272] // las 4 hojas: 2 arriba (semi1), 2 abajo (semi2)
+    const semiY = [46, 244] // los dos casilleros de semifinal, centrados entre su par de hojas
+    const finalY = H / 2 - boxH / 2
+    const mine = cup.teamIds[0]
+
+    const box = (x: number, y: number, id: string | null, score?: number, faded = false) => {
+      const t = id ? teamById(id) : null
+      const isMine = !!t && t.id === mine
+      const stroke = isMine ? "#facc15" : "rgba(255,255,255,.25)"
+      const sw = isMine ? 2.5 : 1
+      const label = t ? `${t.crest} ${t.name.slice(0, 3)}` : "?"
+      const fill = t ? t.color : "#1f2937"
+      return `
+        <g opacity="${faded ? 0.45 : 1}">
+          <rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="7" fill="${fill}22" stroke="${stroke}" stroke-width="${sw}"/>
+          <text x="${x + 8}" y="${y + boxH / 2 + 4}" font-size="11" font-weight="700" fill="#fff" style="font-family:inherit">${esc(label)}</text>
+          ${score !== undefined ? `<text x="${x + boxW - 8}" y="${y + boxH / 2 + 4}" font-size="12" font-weight="800" fill="#fff" text-anchor="end">${score}</text>` : ""}
+        </g>`
+    }
+    // conector en "codo": de dos hojas hacia un casillero, con una línea vertical que las une
+    const elbow = (fromX: number, y1: number, y2: number, toY: number, toX: number) => {
+      const midXLine = (fromX + toX) / 2
+      return `
+        <path d="M ${fromX} ${y1} H ${midXLine} V ${y2} H ${fromX}" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="1.5"/>
+        <path d="M ${midXLine} ${(y1 + y2) / 2} H ${toX}" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="1.5"/>`
+    }
+
+    const s0 = cup.semis[0], s1 = cup.semis[1]
+    const w0 = s0.played && s0.score ? (s0.score[0] > s0.score[1] ? s0.home : s0.away) : null
+    const w1 = s1.played && s1.score ? (s1.score[0] > s1.score[1] ? s1.home : s1.away) : null
+
+    const svg = `
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg">
+        ${elbow(leftX + boxW, rowY[0] + boxH / 2, rowY[1] + boxH / 2, semiY[0] + boxH / 2, midX)}
+        ${elbow(leftX + boxW, rowY[2] + boxH / 2, rowY[3] + boxH / 2, semiY[1] + boxH / 2, midX)}
+        ${elbow(midX + boxW, semiY[0] + boxH / 2, semiY[1] + boxH / 2, finalY + boxH / 2, rightX)}
+        ${box(leftX, rowY[0], s0.home)}
+        ${box(leftX, rowY[1], s0.away)}
+        ${box(leftX, rowY[2], s1.home)}
+        ${box(leftX, rowY[3], s1.away)}
+        ${box(midX, semiY[0], w0 ?? s0.home, s0.played && s0.score ? Math.max(...s0.score) : undefined, !w0)}
+        ${box(midX, semiY[1], w1 ?? s1.home, s1.played && s1.score ? Math.max(...s1.score) : undefined, !w1)}
+        ${box(rightX, finalY, cup.championId ?? cup.final.home, cup.final.played && cup.final.score ? Math.max(...cup.final.score) : undefined, !cup.championId)}
+        ${cup.championId ? `<text x="${rightX + boxW / 2}" y="${finalY - 14}" font-size="22" text-anchor="middle">🏆</text>` : ""}
+      </svg>`
+    const host = h("div", { style: "display:flex;justify-content:center" })
+    host.innerHTML = svg
+    return host
+  }
+
+  function esc(s: string): string {
+    return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!))
   }
 
   function cupSetupScreen(): HTMLElement {
@@ -691,31 +804,39 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
       topBar("COPA", "#facc15", () => go("menu")),
       h("section", { class: "fp-panel" },
-        h("h3", {}, `Elige 4 equipos (${cupPick.length}/4)`),
-        h("p", { class: "fp-note" }, "Eliminación directa: dos semifinales y una final. El sorteo de cruces es al azar."),
-        h("div", { class: "fp-grid", role: "group", "aria-label": "Equipos de la copa" },
+        h("h3", {}, "Elegí tu equipo"),
+        h("p", { class: "fp-note" }, "Eliminación directa: dos semifinales y una final. Los otros 3 salen al azar — vos jugás siempre con este."),
+        h("div", { class: "fp-grid", role: "radiogroup", "aria-label": "Tu equipo en la copa" },
           ...teams.map((t) => h("button", {
-            type: "button", role: "checkbox", class: "fp-chip", style: `--tc:${t.color}`,
-            "aria-checked": String(cupPick.includes(t.id)),
-            "data-key": `pick-${t.id}`,
-            onclick: () => toggleCupPick(t.id),
+            type: "button", role: "radio", class: "fp-chip", style: `--tc:${t.color}`,
+            "aria-checked": String(myTeamPick === t.id),
+            "data-key": `mine-${t.id}`,
+            onclick: () => { myTeamPick = t.id; render() },
           },
             h("span", { class: "fp-dot", style: `background:${t.color}` }),
             h("span", { class: "fp-meta" }, h("b", {}, t.name)),
           )),
         ),
       ),
+      h("section", { class: "fp-panel" },
+        segmented<Nivel>("Nivel de los rivales", "cup-nivel", NIVELES, cupNivel, (v) => { cupNivel = v; render() }),
+      ),
       h("div", { class: "fp-sticky" },
         h("button", {
-          class: "fp-btn solid", "data-key": "start-cup", disabled: cupPick.length !== 4,
+          class: "fp-btn solid", "data-key": "start-cup", disabled: !myTeamPick,
           onclick: () => {
-            if (cupPick.length !== 4) return
-            const ids = shuffled(cupPick) as [string, string, string, string]
+            if (!myTeamPick) return
+            const rivals = shuffled(teams.filter((t) => t.id !== myTeamPick).map((t) => t.id)).slice(0, 3)
+            if (rivals.length < 3) return // no hay suficientes equipos distintos todavía
+            // Mi equipo SIEMPRE primero: así queda "local" (yo lo controlo) en cada cruce que
+            // juegue, incluida la final — sin tocar nada de cup.ts.
+            const ids = [myTeamPick, ...rivals] as [string, string, string, string]
+            saved.settings.nivel = cupNivel
             saved.cup = newCup(ids)
             persist()
             render()
           },
-        }, "Sortear y empezar Copa"),
+        }, myTeamPick ? `Sortear y empezar Copa (jugás con ${teamById(myTeamPick).name})` : "Elegí tu equipo"),
       ),
     ))
   }
@@ -724,12 +845,9 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const nm = nextMatch(cup)
     return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
       topBar("COPA", "#facc15", () => go("menu")),
-      cupMatchRow("Semifinal 1", cup.semis[0]),
-      cupMatchRow("Semifinal 2", cup.semis[1]),
-      cupMatchRow("Final", cup.final),
+      h("section", { class: "fp-panel" }, cupBracketSvg(cup)),
       cup.championId ? h("section", { class: "fp-panel", style: "text-align:center" },
-        h("p", { class: "fp-result fp-arcade", style: "color:#facc15;margin:0" }, "¡CAMPEÓN!"),
-        h("p", { style: `margin:4px 0 0;color:${teamById(cup.championId).color};font-weight:700` }, teamById(cup.championId).name),
+        celebrationScene(teamById(cup.championId)),
       ) : null,
       h("div", { class: "fp-sticky" },
         nm
@@ -760,6 +878,18 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       else { const p = document.documentElement.requestFullscreen?.(); if (p && typeof p.catch === "function") p.catch(() => undefined) }
     } catch { /* no soportado */ }
   }
+  /** true si corre instalada (ícono en el escritorio/launcher de Android, o "Agregar a inicio" en iOS). */
+  function isStandalonePwa(): boolean {
+    if (typeof window === "undefined") return false
+    const std = (navigator as unknown as { standalone?: boolean }).standalone
+    return !!std || !!window.matchMedia?.("(display-mode: standalone), (display-mode: fullscreen)")?.matches
+  }
+  /** Instalada como app: pide pantalla completa sola al arrancar un partido (con gesto del botón
+   *  que llamó a esto). En el navegador normal se deja el botón ⛶ del HUD, que es explícito. */
+  function maybeAutoFullscreen() {
+    if (document.fullscreenElement || !canFullscreen() || !isStandalonePwa()) return
+    toggleFullscreen()
+  }
 
   function showPause(wrap: HTMLElement) {
     if (!match || match.ended || dialog) return
@@ -775,7 +905,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       isDemo
         ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startDemo() }, "Otro partido demo")
         : tp
-        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie) }, "Reiniciar entrenamiento")
+        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie, tp.penalties) }, "Reiniciar entrenamiento")
         : h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
             { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
             { label: "Cancelar", onClick: () => showPause(wrap) },

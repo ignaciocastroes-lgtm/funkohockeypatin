@@ -17,6 +17,12 @@ const orbitron = Orbitron({
 export const metadata: Metadata = {
   title: 'Liga Funko-Patín Arcade',
   description: 'Hockey sobre patines arcade en pista de 40 x 20 m. Juega con dos dedos: uno mueve, el otro pasa y tira.',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Funko-Patín',
+  },
   icons: {
     icon: [
       {
@@ -34,11 +40,18 @@ export const metadata: Metadata = {
     ],
     apple: '/apple-icon.png',
   },
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
 }
 
 export const viewport: Viewport = {
   themeColor: '#050914',
   viewportFit: 'cover',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 }
 
 export default function RootLayout({

@@ -70,9 +70,12 @@ interface Sample { t: number; x: number; y: number }
 
 /** Ventana (s) sobre la que se mide la velocidad de salida del dedo. */
 const FLICK_WINDOW = 0.09
-/** Un toque: recorre menos de esta fracción de la altura y dura menos de TAP_MAX_TIME. */
-const TAP_MAX_DIST = 0.05
-const TAP_MAX_TIME = 0.3
+/** Un toque: recorre menos de esta fracción de la altura y dura menos de TAP_MAX_TIME.
+ *  Un pulgar real nunca queda tan quieto como un test automatizado — 0.05/0.3 salían bien en los
+ *  tests (que tocan con precisión de píxel) pero en la mano el pase de un toque fallaba seguido
+ *  porque el pulgar se corre un poco al levantar. Más ancho acá, sin tocar FLICK_MIN_DIST. */
+const TAP_MAX_DIST = 0.065
+const TAP_MAX_TIME = 0.35
 /** Recorrido mínimo (fracción de la altura) para considerarlo deslizamiento. */
 const FLICK_MIN_DIST = 0.05
 /** Radio del joystick (fracción del lado corto de la pantalla). */

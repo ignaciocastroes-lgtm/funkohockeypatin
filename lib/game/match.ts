@@ -5,6 +5,7 @@ import {
   RINK,
   TeamAI,
   assistAim,
+  awardPenalty,
   bestPassTarget,
   createWorld,
   drainEvents,
@@ -19,6 +20,9 @@ import {
   teammateAtPoint,
 } from "../engine"
 import type { ActionEvent } from "./input"
+import { applyShootoutAttempt, initialShootout } from "./shootout"
+import type { ShootoutResult, ShootoutState } from "./shootout"
+export type { ShootoutResult } from "./shootout"
 import type { SkaterKind, Side, Surface, World } from "../engine"
 import { EDGE_CHIP_R, drawHud, drawScene, teammateEdgeChips } from "./draw"
 import { canvasFontFamily } from "./cues"
@@ -26,6 +30,7 @@ import { Confetti, ReplayBuffer, drawFlash, replayFrameAt, replayWorld } from ".
 import type { Flash, GoalReplay } from "./effects"
 import { TouchInput, isShootKey, keyboardVector } from "./input"
 import { Crowd } from "./crowd"
+import type { MusicLevel } from "./crowd"
 import { Sfx } from "./sfx"
 
 export type Nivel = "facil" | "normal" | "dificil"
@@ -49,6 +54,8 @@ export interface MatchOptions {
   duration: number
   leftHanded?: boolean
   sound?: boolean
+  /** Música de fondo (fiesta de las gradas). Por defecto "on". */
+  music?: MusicLevel
   debug?: boolean
   /** Semilla de la IA (por defecto aleatoria). */
   seed?: number
@@ -59,8 +66,16 @@ export interface MatchOptions {
    *  tecla — es la señal de "quiero jugar", para cortar el demo y arrancar un partido de verdad. */
   onDemoTap?: () => void
   /** Modo entrenamiento: sin equipo rival (la IA no controla nada del lado visita, queda quieto),
-   *  arquero configurable por lado, para practicar tiros libremente. */
-  training?: { goalie: "local" | "visita" | "ninguno" }
+   *  arquero configurable por lado, para practicar tiros libremente. `penalties`: en vez de tiros
+   *  libres, arma un penal tras otro contra el arquero rival (mano a mano, con el tanque de energía
+   *  siempre lleno) — practicar penales y súper tiros sin depender de llegar cansado o de un partido. */
+  training?: { goalie: "local" | "visita" | "ninguno"; penalties?: boolean }
+  /** Tanda de penales para desempatar la Copa: 3 por lado, alternados (mano a mano, arquero
+   *  centrado — el mismo mecanismo que el penal de 3 faltas). Si siguen empatados después de los
+   *  3, se sigue una ronda más a la vez hasta que se decida. Reemplaza a la muerte súbita para esto. */
+  shootout?: boolean
+  /** Se llama una vez cuando termina la tanda de penales (solo con `shootout: true`). */
+  onShootoutEnd?: (r: ShootoutResult) => void
   /** Se llama una vez cuando suena el final. */
   onEnd?: (r: MatchResult) => void
   /** La pestaña se ocultó: el partido se pausó solo. */
@@ -82,6 +97,8 @@ export interface MatchHandle {
   pause(): void
   resume(): void
   setSound(on: boolean): void
+  /** Prende/atenúa/apaga la música de fondo (sin afectar efectos ni al resto del público). */
+  setMusic(level: MusicLevel): void
   /** Desempate de Copa: arranca (o repite) un período de muerte súbita de `seconds` (gol de oro). */
   startSuddenDeath(seconds: number): void
   /** Botón de un toque: pasa a la siguiente vista de cámara (seguir → cancha completa → 3/4 → seguir). */
@@ -133,12 +150,47 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   // Público de las gradas (murmullo, ovaciones, reacciones). El entrenamiento es práctica en soledad: sin público.
   // En el demo (IA vs IA) no hay equipo "propio": festeja parejo.
   const crowd = o.training ? null : new Crowd(sfx, o.demo ? null : 0)
+  crowd?.setMusic(o.music ?? "on")
   const confetti = new Confetti()
   const replayBuf = new ReplayBuffer(2.4)
   let flash: Flash | null = null
   let viewMode: ViewMode = "auto"
   let goalReplay: GoalReplay | null = null
   const stats = { frames: 0, steps: 0, controlledId: null as string | null }
+
+  // ---------- tanda de penales (desempate de Copa) ----------
+  // 3 por lado, alternados; si siguen empatados después de las 3, una ronda más a la vez hasta que
+  // se decida. Reusa exactamente el mecanismo del penal de 3 faltas (awardPenalty): mano a mano,
+  // arquero centrado, el resto lejos. No es una fase nueva del motor — el reloj se sube para que el
+  // "clock<=0 con la pelota pegada al palo termina el partido" no dispare a mitad de la tanda. La
+  // lógica de turnos/rondas/decisión es pura (`./shootout`, testeada aparte); acá solo se conecta.
+  let shootout: ShootoutState | null = null
+  let shootoutAwaitingKickoff = false
+  let shootoutDeadline = 0
+  if (o.shootout) {
+    world.clock = 300 // no cuenta nada real (el reloj no corre en la tanda), solo evita el
+    // "clock<=0 con la pelota pegada al palo termina el partido" — 5:00 se lee mejor que 16:39
+    shootout = initialShootout()
+    shootoutDeadline = performance.now() + 6000
+    awardPenalty(world, shootout.turn)
+  }
+  function resolveShootoutAttempt(scored: boolean) {
+    if (!shootout) return
+    const { state, result } = applyShootoutAttempt(shootout, scored)
+    shootout = result ? null : state
+    if (result) o.onShootoutEnd?.(result)
+  }
+
+  // ---------- entrenamiento de penales / súper tiros ----------
+  // Mismo mecanismo que la tanda de penales (mano a mano, mismo `awardPenalty`), pero sin turnos ni
+  // marcador: apenas se resuelve un intento (gol, atajada o el plazo vence sin definición) arma el
+  // siguiente solo. Siempre dispara el lado 0 (el humano); el arquero rival es obligatorio para esto.
+  let penaltyTrainingAwaitingKickoff = false
+  let penaltyTrainingDeadline = 0
+  if (o.training?.penalties) {
+    penaltyTrainingDeadline = performance.now() + 6000
+    awardPenalty(world, 0)
+  }
   const result: MatchResult = { score: [0, 0], fouls: [0, 0], steals: [0, 0], passes: [0, 0], shots: [0, 0] }
 
   let controlledId: string | null = selectControlled(world, 0, null)
@@ -155,13 +207,19 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const pending: ActionEvent[] = []
   let receiverLock: { id: string; until: number } | null = null
 
+  // Vertical: la cancha (horizontal por naturaleza, 40x20 m) se dibuja rotada 90° para llenar la
+  // pantalla del teléfono en mano. `portraitNow()` decide en base al tamaño real del contenedor;
+  // el "espacio virtual" (vw,vh) es siempre el de una cancha horizontal — todo el resto del motor
+  // de dibujo/HUD/cámara sigue pensando en horizontal, solo se rota el canvas al final.
+  const portraitNow = () => cssH > cssW * 1.05
+
   const resize = () => {
     cssW = Math.max(1, container.clientWidth)
     cssH = Math.max(1, container.clientHeight)
     dpr = Math.min(2.5, window.devicePixelRatio || 1)
     canvas.width = Math.round(cssW * dpr)
     canvas.height = Math.round(cssH * dpr)
-    input.resize(cssW, cssH)
+    input.resize(portraitNow() ? cssH : cssW, portraitNow() ? cssW : cssH)
   }
   resize()
   window.addEventListener("resize", resize)
@@ -170,9 +228,23 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   if (typeof ResizeObserver !== "undefined") { ro = new ResizeObserver(resize); ro.observe(container) }
 
   // ---------- entrada ----------
-  const pos = (e: PointerEvent) => {
+  const rectPos = (e: PointerEvent) => {
     const r = canvas.getBoundingClientRect()
-    return { x: e.clientX - r.left, y: e.clientY - r.top }
+    return { rx: e.clientX - r.left, ry: e.clientY - r.top }
+  }
+  // Traduce un punto real de pantalla al espacio virtual horizontal (ver portraitNow arriba).
+  const toVirtual = (rx: number, ry: number) => (portraitNow() ? { x: ry, y: cssW - rx } : { x: rx, y: ry })
+  const pos = (e: PointerEvent) => { const p = rectPos(e); return toVirtual(p.rx, p.ry) }
+
+  // Pellizco con dos dedos = acercar/alejar la cámara (ángulo de vista), en cualquier orientación.
+  // Mientras se pellizca, los roles de movimiento/tiro de esos dedos se sueltan; al soltar uno y
+  // quedar un solo dedo, retoma el control normal desde esa posición.
+  const activePts = new Map<number, { rx: number; ry: number }>()
+  let pinch: { d0: number; z0: number } | null = null
+  const dist2 = () => {
+    const pts = [...activePts.values()]
+    if (pts.length < 2) return null
+    return Math.max(1, Math.hypot(pts[0].rx - pts[1].rx, pts[0].ry - pts[1].ry))
   }
   const onDown = (e: PointerEvent) => {
     e.preventDefault()
@@ -180,23 +252,56 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     if (o.demo) { o.onDemoTap?.(); return } // "attract mode": cualquier toque corta el demo y arranca a jugar
     try { canvas.setPointerCapture(e.pointerId) } catch { /* ok */ }
     if (paused || ended) return
+    activePts.set(e.pointerId, rectPos(e))
+    if (activePts.size >= 2) {
+      if (!pinch) {
+        const d0 = dist2()
+        if (d0) {
+          pinch = { d0, z0: cam.zoom }
+          for (const id of activePts.keys()) input.cancel(id)
+        }
+      }
+      return
+    }
     const p = pos(e)
     input.down(e.pointerId, p.x, p.y, e.timeStamp / 1000)
   }
   const onMove = (e: PointerEvent) => {
     e.preventDefault()
     if (paused || ended) return
+    if (activePts.has(e.pointerId)) activePts.set(e.pointerId, rectPos(e))
+    if (pinch) {
+      const d = dist2()
+      if (d) cam.zoom = pinch.z0 * (pinch.d0 / d)
+      return
+    }
     const p = pos(e)
     input.move(e.pointerId, p.x, p.y, e.timeStamp / 1000)
   }
   const onUp = (e: PointerEvent) => {
     e.preventDefault()
     sfx.unlock()
-    const p = pos(e)
+    const rp = rectPos(e)
+    activePts.delete(e.pointerId)
+    if (pinch) {
+      if (activePts.size >= 2) return // siguen pellizcando con los dedos que quedan (raro, 3+)
+      pinch = null
+      if (activePts.size === 1 && !paused && !ended) {
+        const [[id, last]] = [...activePts.entries()]
+        const v = toVirtual(last.rx, last.ry)
+        input.down(id, v.x, v.y, e.timeStamp / 1000)
+      }
+      return
+    }
+    const p = toVirtual(rp.rx, rp.ry)
     const ev = input.up(e.pointerId, p.x, p.y, e.timeStamp / 1000)
     if (ev && !paused && !ended && !o.demo) pending.push(ev)
   }
-  const onCancel = (e: PointerEvent) => input.cancel(e.pointerId)
+  const onCancel = (e: PointerEvent) => {
+    activePts.delete(e.pointerId)
+    if (pinch && activePts.size < 2) pinch = null
+    input.cancel(e.pointerId)
+  }
   const noMenu = (e: Event) => e.preventDefault()
   canvas.addEventListener("pointerdown", onDown, { passive: false })
   canvas.addEventListener("pointermove", onMove, { passive: false })
@@ -337,10 +442,12 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     stats.frames++
     if (dt > 0) fpsSmooth += (1 / dt - fpsSmooth) * 0.05
 
-    const portrait = cssH > cssW * 1.05
+    const portrait = portraitNow()
+    const vw = portrait ? cssH : cssW
+    const vh = portrait ? cssW : cssH
     stepsThisFrame = 0
     let alpha = 1
-    if (!paused && !portrait) {
+    if (!paused) {
       alpha = stepper.advance(dt, (fixed) => {
         if (receiverLock && (world.puck.carrierId !== null || world.time > receiverLock.until || world.phase !== "play" || !findSkater(world, receiverLock.id))) receiverLock = null
         controlledId = o.demo ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
@@ -381,6 +488,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
               const scr = cam.toScreen(conceded.lineX, conceded.cy)
               confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffd23f", "#ffffff"], 110)
               goalReplay = { frames: replayBuf.freeze(), scorerSide: ev.side, startedAt: now, speed: 0.55 }
+              if (shootout && ev.side === shootout.turn) {
+                shootoutAwaitingKickoff = true
+                resolveShootoutAttempt(true)
+              }
+              if (o.training?.penalties && ev.side === 0) penaltyTrainingAwaitingKickoff = true
             } else if (ev.type === "end" && !ended) {
               ended = true
               releaseFingers()
@@ -393,17 +505,49 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       })
     }
     stats.controlledId = controlledId
-    if (crowd) { crowd.setPaused(paused || portrait); crowd.update(world, dt) }
+
+    // Si nadie convirtió antes del plazo, es fallo: se corta directo al siguiente (sin la pausa de
+    // festejo, que es solo para goles). Si SÍ convirtió, se espera a que la pausa normal termine y
+    // el motor haga su propio saque — recién ahí se pisa esa formación con el próximo penal.
+    if (shootout) {
+      if (world.clock < 30) world.clock = 300 // piso de seguridad: nunca deja que llegue a 0
+      if (!shootoutAwaitingKickoff && now >= shootoutDeadline) {
+        resolveShootoutAttempt(false)
+        if (shootout) {
+          awardPenalty(world, shootout.turn)
+          shootoutDeadline = now + 6000
+        }
+      } else if (shootoutAwaitingKickoff && world.phase === "play") {
+        shootoutAwaitingKickoff = false
+        awardPenalty(world, shootout.turn)
+        shootoutDeadline = now + 6000
+      }
+    }
+    if (o.training?.penalties) {
+      if (!penaltyTrainingAwaitingKickoff && now >= penaltyTrainingDeadline) {
+        awardPenalty(world, 0)
+        penaltyTrainingDeadline = now + 6000
+      } else if (penaltyTrainingAwaitingKickoff && world.phase === "play") {
+        penaltyTrainingAwaitingKickoff = false
+        awardPenalty(world, 0)
+        penaltyTrainingDeadline = now + 6000
+      }
+    }
+    if (crowd) { crowd.setPaused(paused); crowd.update(world, dt) }
 
     if (viewMode === "auto") {
-      cam.update(dt, world, controlledId, cssW, cssH)
+      cam.update(dt, world, controlledId, vw, vh)
     } else {
-      const aspect = cssW / cssH
+      const aspect = vw / vh
       const margin = 2.2
       const fullW = Math.max(RINK.length + margin * 2, (RINK.width + margin * 2) * aspect)
-      cam.frame(cssW, cssH, viewMode === "full" ? fullW : fullW * 0.62, RINK.length / 2, RINK.width / 2)
+      cam.frame(vw, vh, viewMode === "full" ? fullW : fullW * 0.62, RINK.length / 2, RINK.width / 2)
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // Vertical: rota todo el dibujo (cancha, HUD, overlays) 90° para llenar la pantalla en mano.
+    // La cancha "horizontal" de siempre queda intacta en el espacio virtual (vw x vh) — solo se
+    // gira al volcarla sobre el canvas real (cssW x cssH).
+    if (portrait) { ctx.translate(cssW, 0); ctx.rotate(Math.PI / 2) }
 
     // Gol: mientras dura la pausa de festejo, se reproduce en cámara lenta lo que pasó
     // justo antes (en vez de la escena congelada). Si ya salimos de esa fase, se corta.
@@ -415,18 +559,17 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     } else if (goalReplay) {
       goalReplay = null
     }
-    const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, names, crests, alpha: sceneAlpha, fontFamily: FONT }
+    const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement }
     drawScene(ctx, sceneWorld, cam, opts)
     if (flash) {
-      drawFlash(ctx, flash, now, cssW, cssH)
+      drawFlash(ctx, flash, now, vw, vh)
       if (now - flash.startedAt > flash.durationMs) flash = null
     }
     confetti.update(dt)
-    confetti.draw(ctx, cssW, cssH)
+    confetti.draw(ctx, vw, vh)
     drawHud(ctx, world, cam, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo })
     drawTouchOverlay(ctx, world, cam, input, controlledId)
-    if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
-    if (portrait) drawRotateHint(ctx, cssW, cssH)
+    if (banner && now < banner.until) drawBanner(ctx, banner.text, vw, vh)
     if (o.debug) drawDebug(ctx, fpsSmooth, stepsThisFrame, world)
   }
   raf = requestAnimationFrame(frame)
@@ -442,6 +585,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     pause,
     resume,
     setSound(on: boolean) { sfx.muted = !on },
+    setMusic(level: MusicLevel) { crowd?.setMusic(level) },
     startSuddenDeath(seconds: number) {
       ended = false
       paused = false
@@ -528,21 +672,6 @@ function drawBanner(ctx: CanvasRenderingContext2D, text: string, W: number, H: n
   ctx.fill()
   ctx.fillStyle = "#93c5fd"
   ctx.fillText(text, W / 2, by + fs)
-  ctx.restore()
-}
-
-function drawRotateHint(ctx: CanvasRenderingContext2D, W: number, H: number) {
-  ctx.save()
-  ctx.fillStyle = "rgba(5,9,20,0.94)"
-  ctx.fillRect(0, 0, W, H)
-  ctx.fillStyle = "#fff"
-  ctx.textAlign = "center"
-  ctx.textBaseline = "middle"
-  ctx.font = `700 ${Math.min(W * 0.075, 34)}px ${FONT}`
-  ctx.fillText("Gira el teléfono", W / 2, H / 2 - 14)
-  ctx.font = `500 ${Math.min(W * 0.045, 18)}px ${FONT}`
-  ctx.fillStyle = "rgba(255,255,255,0.7)"
-  ctx.fillText("La pista es horizontal", W / 2, H / 2 + 20)
   ctx.restore()
 }
 

@@ -97,7 +97,7 @@ export function plateSize(vw: number, vh: number): { boxW: number; boxH: number 
  */
 export function hudAvoidRects(vw: number, vh: number): Rect[] {
   const { boxW, boxH } = plateSize(vw, vh)
-  const buttonsW = 8 + 4 * 46 + 3 * 8 // 4 botones de 46 px con 8 px de separación
+  const buttonsW = 8 + 5 * 46 + 4 * 8 // hasta 5 botones de 46 px con 8 px de separación (pausa/vista/pantalla/sonido/música)
   return [
     { x0: 0, y0: 0, x1: 8 + boxW, y1: 8 + boxH + 34 },
     { x0: vw - buttonsW, y0: 0, x1: vw, y1: 8 + 46 + 6 },

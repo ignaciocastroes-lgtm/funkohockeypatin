@@ -1,13 +1,14 @@
 import { GOALS } from "../engine"
 import type { GameEvent, Side, World } from "../engine"
 import {
-  CROWD, bedGain, energyGain, equalPowerCurve, nextLoopStart, panFor, pickVariant, pressure, reactionFor, smoothExcitement,
+  CROWD, bedGain, energyGain, equalPowerCurve, musicGain, nextLoopStart, panFor, pickVariant, pressure, reactionFor, smoothExcitement,
 } from "./crowd-mix"
-import type { Sfx } from "./sfx"
+import { audioUrl, type Sfx } from "./sfx"
 
 /**
- * Público de las gradas: murmullo de fondo, entusiasmo que sube con la jugada, ovaciones de gol y
- * reacciones cortas — todo a partir de grabaciones reales de estadio (ver scripts/build-crowd-audio.py).
+ * Público de las gradas: murmullo de fondo, entusiasmo que sube con la jugada, ovaciones de gol,
+ * reacciones cortas, abucheo cuando anota el rival y el cántico de victoria al ganar — todo a partir
+ * de grabaciones reales de estadio (ver scripts/build-crowd-audio.py).
  * Comparte el AudioContext de `Sfx` (que ya resuelve el desbloqueo en iOS, el silencio y el cierre).
  */
 
@@ -18,26 +19,20 @@ export const CROWD_FILES = {
   roar1: "crowd-roar-1.mp3",
   roar2: "crowd-roar-2.mp3",
   react: "crowd-react.mp3",
+  drums: "crowd-drums.mp3",
+  victory: "crowd-victory.mp3",
+  /** Música de fondo (fiesta de las gradas): grabación real, sube y baja sola de energía. */
+  fiesta: "crowd-fiesta.mp3",
 } as const
 type Key = keyof typeof CROWD_FILES
 
-declare global {
-  interface Window {
-    /** En el build de un solo archivo (juego.html) los audios van incrustados como data: URI. */
-    __FP_AUDIO__?: Record<string, string>
-  }
-}
-
-/** Dónde está un audio: incrustado (juego.html) o en /audio/ (build de Next). */
-export function audioUrl(file: string): string {
-  const inline = typeof window !== "undefined" ? window.__FP_AUDIO__?.[file] : undefined
-  return inline ?? `/audio/${file}`
-}
-
 export type CrowdStatus = "idle" | "loading" | "ready" | "error"
+/** Estado del control de música del HUD: prendida, atenuada, o apagada del todo. */
+export type MusicLevel = "on" | "low" | "off"
+export const musicMulFor = (level: MusicLevel): number => (level === "on" ? 1 : level === "low" ? CROWD.musicLow : 0)
 
 interface Layer {
-  key: "bedA" | "bedC" | "energy"
+  key: "bedA" | "bedC" | "energy" | "fiesta"
   buf: AudioBuffer
   gain: GainNode
   /** Momento (reloj de audio) en que debe arrancar la próxima vuelta. */
@@ -67,8 +62,12 @@ export class Crowd {
   private lastRoar = -1
   private roar: { gain: GainNode; endsAt: number } | null = null
   private lastReactAt = -10
+  private musicMul = 1
 
   constructor(private sfx: Sfx, private humanSide: Side | null = 0) {}
+
+  /** Prende/atenúa/apaga la música de fondo, sin tocar el resto del público. */
+  setMusic(level: MusicLevel) { this.musicMul = musicMulFor(level) }
 
   /** Para la depuración y el e2e. */
   get info() {
@@ -111,7 +110,7 @@ export class Crowd {
     master.connect(comp)
     comp.connect(ctx.destination)
     this.master = master
-    for (const key of ["bedA", "bedC", "energy"] as const) {
+    for (const key of ["bedA", "bedC", "energy", "fiesta"] as const) {
       const buf = this.buffers[key]
       if (!buf) continue
       const gain = ctx.createGain()
@@ -165,7 +164,7 @@ export class Crowd {
     this.master.gain.setTargetAtTime(silent ? 0 : CROWD.master * duck, now, silent ? 0.08 : 0.12)
 
     for (const l of this.layers) {
-      const target = l.key === "energy" ? energyGain(e) : bedGain(e) * (l.key === "bedC" ? 0.85 : 1)
+      const target = l.key === "energy" ? energyGain(e) : l.key === "fiesta" ? musicGain(e, this.musicMul) : bedGain(e) * (l.key === "bedC" ? 0.85 : 1)
       l.gain.gain.setTargetAtTime(target, now, 0.35)
       while (l.nextStart < now + 3) this.startVoice(ctx, l, Math.max(l.nextStart, now + 0.02))
     }
@@ -181,9 +180,15 @@ export class Crowd {
     this.bump = Math.min(1, this.bump + r.bump)
     if (r.duck) { this.duckUntil = now + r.duck.seconds; this.duckAmount = r.duck.amount }
     if (r.roar) this.playRoar(ctx, r.roar.gain, panFor(GOALS[r.roar.goalSide].lineX, camCx, camWidth))
+    if (r.drums) this.playDrums(ctx, r.drums)
     if (r.react !== undefined && now - this.lastReactAt > 1.5) {
       this.lastReactAt = now
       this.playReact(ctx, r.react, panFor(w.puck.x, camCx, camWidth))
+    }
+    // El cántico de victoria necesita el marcador final, que reactionFor no recibe: se decide acá.
+    if (ev.type === "end" && this.humanSide !== null) {
+      const rival = this.humanSide === 0 ? 1 : 0
+      if (w.score[this.humanSide] > w.score[rival]) this.playVictory(ctx)
     }
   }
 
@@ -212,6 +217,37 @@ export class Crowd {
     src.start(now)
     src.onended = () => { try { src.disconnect(); g.disconnect() } catch { /* ya soltado */ } }
     this.roar = { gain: g, endsAt: now + buf.duration }
+  }
+
+  /** Tambores de estadio para el momento de tensión del penal — un golpe corto, centrado, sin panear
+   *  a ninguna portería en particular (viene de las gradas en general). */
+  private playDrums(ctx: AudioContext, gain: number) {
+    const buf = this.buffers.drums
+    if (!buf) return
+    const now = ctx.currentTime
+    const g = ctx.createGain()
+    g.gain.value = Math.min(1, gain) * CROWD.roarMax
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(g)
+    g.connect(this.master as GainNode)
+    src.start(now)
+    src.onended = () => { try { src.disconnect(); g.disconnect() } catch { /* ya soltado */ } }
+  }
+
+  /** Cántico de "ya ganamos" al terminar el partido con el equipo humano arriba en el marcador. */
+  private playVictory(ctx: AudioContext) {
+    const buf = this.buffers.victory
+    if (!buf) return
+    const now = ctx.currentTime
+    const g = ctx.createGain()
+    g.gain.value = CROWD.roarMax
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(g)
+    g.connect(this.master as GainNode)
+    src.start(now)
+    src.onended = () => { try { src.disconnect(); g.disconnect() } catch { /* ya soltado */ } }
   }
 
   private playReact(ctx: AudioContext, gain: number, pan: number) {

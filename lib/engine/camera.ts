@@ -3,6 +3,10 @@ import type { World } from "./types"
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
 
+/** Rango del pellizco (pinch) manual: cuánto puede acercar/alejar al multiplicar el ancho visible. */
+const ZOOM_MIN = 0.55
+const ZOOM_MAX = 1.9
+
 /**
  * Cámara de seguimiento. Vive en la capa de render (usa dt real del frame, no el paso fijo).
  * - Sigue al jugador controlado y al puck, adelantándose un poco en la dirección de la jugada.
@@ -17,9 +21,15 @@ export class Camera {
   vw = 1
   vh = 1
   private ready = false
+  private _zoom = 1
 
   get ppm(): number { return this.vw / this.width }
   get height(): number { return this.width * (this.vh / this.vw) }
+
+  /** Ángulo de acercamiento manual (pellizco con dos dedos). 1 = normal, <1 = acercar, >1 = alejar.
+   *  Se combina multiplicando el ancho visible calculado por la cámara, en cualquier vista. */
+  get zoom(): number { return this._zoom }
+  set zoom(z: number) { this._zoom = clamp(z, ZOOM_MIN, ZOOM_MAX) }
 
   reset() { this.ready = false }
 
@@ -27,7 +37,7 @@ export class Camera {
   frame(vw: number, vh: number, width: number, cx: number, cy: number) {
     this.vw = Math.max(1, vw)
     this.vh = Math.max(1, vh)
-    this.width = width
+    this.width = width * this._zoom
     this.cx = cx
     this.cy = cy
     this.ready = true
@@ -63,11 +73,8 @@ export class Camera {
     const ty = fy + ly
 
     const maxByRink = (RINK.width + CAMERA.edgeMargin * 2) * aspect
-    const needW = Math.min(
-      CAMERA.maxWidth,
-      maxByRink,
-      Math.max(CAMERA.baseWidth, span.dx + CAMERA.fitMargin * 2, (span.dy + CAMERA.fitMargin * 2) * aspect),
-    )
+    const wanted = Math.max(CAMERA.baseWidth, span.dx + CAMERA.fitMargin * 2, (span.dy + CAMERA.fitMargin * 2) * aspect)
+    const needW = Math.min(CAMERA.maxWidth, maxByRink, wanted * this._zoom)
 
     if (!this.ready) {
       this.cx = tx; this.cy = ty; this.width = needW

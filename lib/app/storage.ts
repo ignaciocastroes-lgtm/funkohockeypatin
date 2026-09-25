@@ -1,4 +1,5 @@
 import type { Nivel } from "../game/match"
+import type { MusicLevel } from "../game/crowd"
 import { DEFAULT_TEAMS, MAX_CUSTOM_TEAMS, sanitizeTeam } from "./teams"
 import type { Team } from "./teams"
 import { sanitizeCup } from "./cup"
@@ -15,6 +16,9 @@ export interface Settings {
   visitId: string
   leftHanded: boolean
   sound: boolean
+  /** Música de fondo (ambiente de fiesta en las gradas, independiente de los efectos/público):
+   *  prendida, atenuada o apagada — no afecta al resto del público ni a los efectos. */
+  music: MusicLevel
   /** "No volver a mostrar" el tutorial de controles (que sale al arrancar una Copa). */
   tutorialOptOut: boolean
   /** Modo entrenamiento desbloqueado (ganando la Copa, o con el atajo secreto). */
@@ -35,6 +39,7 @@ export const DEFAULT_SETTINGS: Settings = {
   visitId: DEFAULT_TEAMS[1].id,
   leftHanded: false,
   sound: true,
+  music: "on",
   tutorialOptOut: false,
   trainingUnlocked: false,
 }
@@ -97,6 +102,8 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.visitId === "string") out.settings.visitId = s.visitId
     if (typeof s.leftHanded === "boolean") out.settings.leftHanded = s.leftHanded
     if (typeof s.sound === "boolean") out.settings.sound = s.sound
+    if (s.music === "on" || s.music === "low" || s.music === "off") out.settings.music = s.music
+    else if (typeof s.music === "boolean") out.settings.music = s.music ? "on" : "off" // migración de una versión anterior (era on/off nomás)
     if (typeof s.tutorialOptOut === "boolean") out.settings.tutorialOptOut = s.tutorialOptOut
     // migración: quien ya lo había visto (versión anterior) no lo necesita de nuevo
     else if (s.seenTutorial === true) out.settings.tutorialOptOut = true

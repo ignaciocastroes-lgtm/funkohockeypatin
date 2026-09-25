@@ -17,6 +17,9 @@ export interface DrawOptions {
   /** true en modo demo (IA vs IA): muestra el cartel "TOCÁ PARA JUGAR" pulsando. */
   demo?: boolean
   /** 0..1: interpolación entre el paso anterior y el actual. */
+  /** 0..1: entusiasmo actual del público (`crowd.info.excitement`), para que las gradas reboten un
+   *  poco más en los momentos de tensión. Sin público (entrenamiento), se usa un valor tranquilo fijo. */
+  crowdExcitement?: number
   alpha: number
   fontFamily: string
 }
@@ -552,6 +555,56 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
   ctx.restore()
 }
 
+/**
+ * Público visual: una tribuna de puntitos de colores más allá de las vallas, todo alrededor de la
+ * pista. Cada "hincha" tiene su posición fija (grilla + jitter determinístico por hash, nada de
+ * estado que guardar) pero rebota un poco con un seno — más alto cuanto más entusiasmo hay
+ * (`crowdExcitement`, ver `Crowd.info` en crowd.ts), así la tribuna "se prende" en los momentos
+ * de tensión igual que el público de audio. Solo se dibujan los que entran en cuadro.
+ */
+const STANDS_DEPTH = 2.0
+const FAN_SPACING = 0.55
+const FAN_PALETTE = ["#f97316", "#22d3ee", "#facc15", "#a855f7", "#ef4444", "#4ade80", "#e2e8f0", "#38bdf8"]
+function fanHash(i: number, j: number): number {
+  const h = Math.sin(i * 127.1 + j * 311.7) * 43758.5453
+  return h - Math.floor(h)
+}
+function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number) {
+  const x0 = cam.cx - cam.width / 2, x1 = cam.cx + cam.width / 2
+  const y0 = cam.cy - cam.height / 2, y1 = cam.cy + cam.height / 2
+  const bands = [
+    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: -STANDS_DEPTH, by1: 0 }, // arriba
+    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: RINK.width, by1: RINK.width + STANDS_DEPTH }, // abajo
+    { bx0: -STANDS_DEPTH, bx1: 0, by0: 0, by1: RINK.width }, // izquierda
+    { bx0: RINK.length, bx1: RINK.length + STANDS_DEPTH, by0: 0, by1: RINK.width }, // derecha
+  ]
+  const bob = 0.05 + 0.18 * Math.max(0, Math.min(1, excitement))
+  ctx.save()
+  for (const b of bands) {
+    const cx0 = Math.max(b.bx0, x0 - FAN_SPACING), cx1 = Math.min(b.bx1, x1 + FAN_SPACING)
+    const cy0 = Math.max(b.by0, y0 - FAN_SPACING), cy1 = Math.min(b.by1, y1 + FAN_SPACING)
+    if (cx1 <= cx0 || cy1 <= cy0) continue
+    const i0 = Math.floor(cx0 / FAN_SPACING), i1 = Math.ceil(cx1 / FAN_SPACING)
+    const j0 = Math.floor(cy0 / FAN_SPACING), j1 = Math.ceil(cy1 / FAN_SPACING)
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        const h = fanHash(i, j)
+        const fx = i * FAN_SPACING + (h - 0.5) * 0.2
+        const fy = j * FAN_SPACING + (fanHash(j, i) - 0.5) * 0.2
+        if (fx < b.bx0 || fx > b.bx1 || fy < b.by0 || fy > b.by1) continue
+        const phase = h * Math.PI * 2
+        const yy = fy - Math.abs(Math.sin(now * 3.1 + phase)) * bob * (0.5 + 0.5 * fanHash(j, i))
+        ctx.globalAlpha = 0.5 + 0.28 * fanHash(i + 1, j + 1)
+        ctx.fillStyle = FAN_PALETTE[Math.floor(h * FAN_PALETTE.length) % FAN_PALETTE.length]
+        ctx.beginPath()
+        ctx.arc(fx, yy, 0.15, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }
+  ctx.restore()
+}
+
 export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, o: DrawOptions) {
   const { alpha } = o
   ctx.fillStyle = "#050914"
@@ -562,6 +615,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   ctx.scale(cam.ppm, cam.ppm)
   ctx.translate(-cam.cx, -cam.cy)
 
+  drawCrowdStands(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000)
   drawFloor(ctx, w.surface, cam)
   drawMarkings(ctx)
   drawGoals(ctx)
@@ -776,6 +830,55 @@ function fmtClock(sec: number): string {
   return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`
 }
 
+/**
+ * Mini tarjeta azul con cuenta regresiva, pegada al escudo de cada equipo en el marcador, por cada
+ * jugador expulsado (`world.bench`) que le falta volver. `outward` es -1 (equipo 0, escudo a la
+ * izquierda: la tarjeta cuelga hacia afuera, a la izquierda) o 1 (equipo 1, cuelga a la derecha) —
+ * así nunca tapa el reloj del centro. Con dos expulsados del mismo equipo (tope de la regla), se
+ * apilan una arriba de la otra, más chicas.
+ */
+function drawPenaltyBadges(
+  ctx: CanvasRenderingContext2D, w: World, side: Side,
+  crestCx: number, crestCy: number, crestFs: number, outward: 1 | -1, fontFamily: string,
+) {
+  const list = w.bench.filter((b) => b.side === side)
+  if (list.length === 0) return
+  const shown = list.slice(0, 2)
+  // Más grande que la primera versión: a ese tamaño se perdía contra el resto del marcador y
+  // costaba notar que había una expulsión en curso — con brillo azul propio para que salte a la vista.
+  const cw = crestFs * (shown.length > 1 ? 0.62 : 0.74)
+  const ch = cw * 1.3
+  const cx = crestCx + outward * (crestFs * 0.5 + cw * 0.48)
+  ctx.save()
+  shown.forEach((b, i) => {
+    const cy = crestCy - (shown.length - 1) * ch * 0.42 + i * ch * 0.84
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(outward * 0.16) // leve inclinación, como una tarjeta real cayendo
+    ctx.shadowColor = "#3b82f6"
+    ctx.shadowBlur = cw * 0.5
+    ctx.fillStyle = "#1d4ed8"
+    ctx.strokeStyle = "rgba(255,255,255,0.9)"
+    ctx.lineWidth = Math.max(1.2, cw * 0.09)
+    ctx.beginPath()
+    if (ctx.roundRect) ctx.roundRect(-cw / 2, -ch / 2, cw, ch, cw * 0.16); else ctx.rect(-cw / 2, -ch / 2, cw, ch)
+    ctx.fill()
+    ctx.shadowBlur = 0
+    ctx.stroke()
+    ctx.fillStyle = "#fff"
+    ctx.font = `800 ${ch * 0.58}px ${fontFamily}, system-ui`
+    ctx.textAlign = "center"
+    ctx.textBaseline = "middle"
+    ctx.lineWidth = Math.max(1, ch * 0.06)
+    ctx.strokeStyle = "rgba(0,0,0,0.6)"
+    const label = String(Math.max(0, Math.ceil(b.timer)))
+    ctx.strokeText(label, 0, ch * 0.03)
+    ctx.fillText(label, 0, ch * 0.03)
+    ctx.restore()
+  })
+  ctx.restore()
+}
+
 const SB_GREEN = "#a6e19f" // verde de los dígitos de la placa de ardisport.cl
 const SB_PANEL = "#020402"
 const SB_EDGE = "#2b372b"
@@ -849,10 +952,12 @@ export function drawHud(ctx: CanvasRenderingContext2D, w: World, cam: Camera, o:
   ctx.textBaseline = "middle"
   ctx.textAlign = "center"
   ctx.fillStyle = "#fff"
+  const live = w.phase === "goal" || w.phase === "ended"
   ctx.fillText(o.crests[0], sc[0] + scoreW / 2, topY + topH / 2 + 1)
   ctx.fillText(o.crests[1], sc[1] + scoreW / 2, topY + topH / 2 + 1)
+  drawPenaltyBadges(ctx, w, 0, sc[0] + scoreW / 2, topY + topH / 2 + 1, crestFs, -1, o.fontFamily)
+  drawPenaltyBadges(ctx, w, 1, sc[1] + scoreW / 2, topY + topH / 2 + 1, crestFs, 1, o.fontFamily)
 
-  const live = w.phase === "goal" || w.phase === "ended"
   const blink = w.clock <= 10 && Math.floor(performance.now() / 350) % 2 === 0
   box(clockX, topY, clockW, topH, w.clock <= 10 && !live ? "#7f1d1d" : "#3a1212")
   const dh = topH * 0.66
@@ -907,18 +1012,25 @@ export function drawHud(ctx: CanvasRenderingContext2D, w: World, cam: Camera, o:
     }
   }
 
-  // energía: una raya fina al pie de la placa, del lado del equipo humano únicamente
+  // energía: raya al pie de la placa, del lado del equipo humano únicamente. Antes era una línea de
+  // 3-4px casi del color del fondo — se notaba menos que el cuerpo apagado del jugador cansado. Ahora
+  // es más gruesa, con una pista de fondo visible y parpadea en rojo cuando queda crítica.
   const controlled = w.skaters.find((k) => k.id === o.controlledId)
   if (controlled) {
     const side = controlled.side
     const pct = Math.max(0, Math.min(1, controlled.stamina / 100))
     const half = boxW / 2
     const ex = side === 0 ? bx : bx + half
-    const eh = Math.max(3, boxH * 0.045)
-    ctx.fillStyle = "rgba(0,0,0,0.4)"
-    ctx.fillRect(ex, by + boxH - eh, half, eh)
-    ctx.fillStyle = pct < 0.25 ? "#f87171" : pct < 0.5 ? "#fbbf24" : "#4ade80"
-    ctx.fillRect(ex, by + boxH - eh, half * pct, eh)
+    const eh = Math.max(6, boxH * 0.09)
+    const ey = by + boxH - eh
+    const critical = pct < 0.25 && Math.floor(performance.now() / 300) % 2 === 0
+    ctx.fillStyle = "rgba(255,255,255,0.16)"
+    ctx.fillRect(ex, ey, half, eh)
+    ctx.fillStyle = critical ? "#ef4444" : pct < 0.25 ? "#f87171" : pct < 0.5 ? "#fbbf24" : "#4ade80"
+    ctx.fillRect(ex, ey, Math.max(0, half * pct), eh)
+    ctx.strokeStyle = "rgba(255,255,255,0.4)"
+    ctx.lineWidth = 1
+    ctx.strokeRect(ex + 0.5, ey + 0.5, half - 1, eh - 1)
   }
 
   ctx.restore() // clip

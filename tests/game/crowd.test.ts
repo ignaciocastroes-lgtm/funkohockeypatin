@@ -7,7 +7,8 @@ import type { GameEvent } from "../../lib/engine"
 import {
   CROWD, bedGain, energyGain, equalPowerCurve, nextLoopStart, panFor, pickVariant, pressure, reactionFor, smoothExcitement,
 } from "../../lib/game/crowd-mix"
-import { CROWD_FILES, audioUrl } from "../../lib/game/crowd"
+import { CROWD_FILES } from "../../lib/game/crowd"
+import { SFX_FILES, audioUrl } from "../../lib/game/sfx"
 
 const world = (over: { x?: number; y?: number; clock?: number } = {}) => {
   const w = createWorld({ goalies: false })
@@ -75,17 +76,24 @@ test("niveles: valores fuera de rango no producen números raros", () => {
 // ---------- reacciones a eventos ----------
 const G = (side: 0 | 1, combo = false): GameEvent => ({ type: "goal", side, combo })
 
-test("gol: se festeja más el propio que el del rival; el golazo (combo) más que el gol común", () => {
-  const mine = reactionFor(G(0), 0)!.roar!.gain
-  const theirs = reactionFor(G(1), 0)!.roar!.gain
-  assert.ok(mine > theirs, `propio ${mine} vs rival ${theirs}`)
-  assert.ok(reactionFor(G(0, true), 0)!.roar!.gain > reactionFor(G(0, false), 0)!.roar!.gain)
+test("gol: el propio se festeja (roar); el del rival, la tribuna se calla (no hay abucheo real todavía)", () => {
+  const mine = reactionFor(G(0), 0)!
+  const theirs = reactionFor(G(1), 0)!
+  assert.ok(mine.roar, "el gol propio debe traer roar")
+  assert.equal(theirs.roar, undefined, "el gol del rival no debe traer roar")
+  assert.ok(theirs.bump < mine.bump, "el gol del rival apaga el entusiasmo, no lo sube")
+  assert.ok(reactionFor(G(0, true), 0)!.roar!.gain > reactionFor(G(0, false), 0)!.roar!.gain, "el golazo (combo) festeja más que el gol común")
   assert.equal(reactionFor(G(0), 0)!.bump, 1)
 })
 
 test("gol: el lado del festejo es la portería donde entró (anota el 0 → portería del 1)", () => {
   assert.equal(reactionFor(G(0), 0)!.roar!.goalSide, 1)
-  assert.equal(reactionFor(G(1), 0)!.roar!.goalSide, 0)
+})
+
+test("penal: trae tambores además del golpe de entusiasmo y el silbato bajando al público", () => {
+  const r = reactionFor({ type: "penalty", side: 0, shooterId: "L1" }, 0)!
+  assert.ok(r.drums! > 0)
+  assert.ok(r.duck)
 })
 
 test("demo (sin equipo propio): festeja parejo los goles de los dos lados", () => {
@@ -190,7 +198,7 @@ test("assets: existen los 6 audios declarados, son MP3 válidos y pesan poco", (
 })
 
 test("assets: no hay archivos de más en public/audio, ni los ORIGINALES de las grabaciones (licencia)", () => {
-  const declared = new Set<string>(Object.values(CROWD_FILES))
+  const declared = new Set<string>([...Object.values(CROWD_FILES), ...Object.values(SFX_FILES)])
   for (const f of readdirSync(AUDIO_DIR)) assert.ok(declared.has(f), `archivo no declarado en public/audio: ${f}`)
   // los originales (con el id de Pixabay en el nombre) no se redistribuyen tal cual: solo las versiones procesadas
   const bad = /(mykelu|arunangshubanerjee|u_xg7ssi08yr|vishiv).*\.mp3$/
@@ -202,3 +210,6 @@ test("assets: no hay archivos de más en public/audio, ni los ORIGINALES de las 
   const offenders = walk(resolve(AUDIO_DIR, "../..")).filter((p) => bad.test(p))
   assert.deepEqual(offenders, [])
 })
+
+
+

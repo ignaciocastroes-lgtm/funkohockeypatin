@@ -25,6 +25,11 @@ export const CROWD = {
   energyMax: 0.6,
   roarMax: 0.72,
   reactMax: 0.7,
+  /** Techo de la música de fondo (fiesta de las gradas) — es la única capa con control propio de
+   *  encendido/atenuación (`Crowd.setMusic`), independiente del resto del público. */
+  musicMax: 0.7,
+  /** Volumen de la música en su estado "atenuada" (fracción de `musicMax`). */
+  musicLow: 0.32,
   /** Volumen general del público respecto de los efectos: es "ambiente", no protagonista. */
   master: 0.55,
 } as const
@@ -65,11 +70,25 @@ export function energyGain(e: number): number {
   return CROWD.energyMax * Math.pow(x, 1.4)
 }
 
+/**
+ * Música de fondo (grabación real de una fiesta/tribuna, con su propio sube-y-baja): suena siempre
+ * que esté encendida, algo más presente cuando el partido se pone tenso — igual que los murmullos.
+ * `mul` es el control manual propio de esta capa (1 = prendida, `CROWD.musicLow` = atenuada, 0 =
+ * apagada) — el botón de música del HUD cicla entre los tres. Además comparte el "duck" del resto
+ * del público (silbatos, goles), que baja el bus entero un instante.
+ */
+export function musicGain(e: number, mul: number): number {
+  if (mul <= 0) return 0
+  return CROWD.musicMax * mul * (0.55 + 0.45 * clamp01(e))
+}
+
 export interface CrowdReaction {
   /** Golpe de entusiasmo (0..1) que se suma al actual y luego decae solo. */
   bump: number
   /** Ovación de gol: volumen (0..1) y de qué lado de la pista salió el gol (para panear). */
   roar?: { gain: number; goalSide: Side }
+  /** Tambores de estadio: momento de tensión (hoy solo el penal). Volumen 0..1. */
+  drums?: number
   /** Reacción corta ("¡uy!"): volumen 0..1. */
   react?: number
   /** El silbato tapa al público un instante: cuánto baja (0..1) y por cuántos segundos. */
@@ -78,14 +97,22 @@ export interface CrowdReaction {
 
 /**
  * Qué hace el público ante un evento del juego. `humanSide` es el equipo del jugador (0), o null en el
- * demo (IA vs IA): el gol propio se festeja más fuerte que el del rival.
+ * demo (IA vs IA): el gol propio se festeja; el del rival, la tribuna se queda callada en vez de
+ * festejar apagado — no hay, todavía, ninguna grabación real de abucheo para usar ahí (en el demo, sin
+ * equipo propio, los dos goles se festejan igual). El cántico de "ya ganamos" al ganar el partido se
+ * decide en `crowd.ts` (necesita el marcador final, esta función no lo recibe).
  */
 export function reactionFor(ev: GameEvent, humanSide: Side | null): CrowdReaction | null {
   switch (ev.type) {
     case "goal": {
-      const mine = humanSide === null ? 0.85 : ev.side === humanSide ? 1 : 0.6
       // ev.side es quien ANOTÓ; el gol cae en la portería del otro lado
       const goalSide: Side = ev.side === 0 ? 1 : 0
+      if (humanSide !== null && ev.side !== humanSide) {
+        // Gol del rival: la tribuna se calla. No hay abucheo real todavía (el archivo que parecía
+        // serlo, por el nombre, resultó ser tambores — ver build-crowd-audio.py).
+        return { bump: 0.3 }
+      }
+      const mine = humanSide === null ? 0.85 : 1
       return { bump: 1, roar: { gain: (ev.combo ? 1 : 0.9) * mine, goalSide } }
     }
     case "post": return { bump: 0.35, react: 0.8 }
@@ -93,7 +120,7 @@ export function reactionFor(ev: GameEvent, humanSide: Side | null): CrowdReactio
     case "kick": return ev.superShot ? { bump: 0.25, react: 0.35 } : null
     case "combo": return ev.touches >= 3 ? { bump: 0.2 } : null
     case "foul": return { bump: 0.2, duck: { amount: 0.45, seconds: 0.9 } }
-    case "penalty": return { bump: 0.35, duck: { amount: 0.5, seconds: 1.1 } }
+    case "penalty": return { bump: 0.35, drums: 0.8, duck: { amount: 0.5, seconds: 1.1 } }
     case "kickoff": return { bump: 0.08, duck: { amount: 0.3, seconds: 0.4 } }
     case "end": return { bump: 0.8, roar: { gain: 0.8, goalSide: 0 }, duck: { amount: 0.5, seconds: 1.0 } }
     default: return null

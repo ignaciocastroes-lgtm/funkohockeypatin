@@ -166,6 +166,11 @@ eliminación directa a 4 equipos.
   penal" separada — es el mismo camino que un saque normal, con otra formación.
 - Sonido y aviso: silbato + `¡PENAL para [equipo]!` (`match.ts`/`sfx.ts`), reusando el mismo mecanismo
   de "pantallazo" que ya tenían el gol y la falta.
+- **Siempre con el tanque lleno**: `awardPenalty()` le resetea la energía al tirador a 100 — así el
+  penal siempre puede ser un supertiro de verdad, sin que el cansancio del partido (o de intentos
+  anteriores, en la tanda de la Copa) se lo impida. La física del arquero ya exige un tiro fuerte y
+  bien colocado para entrar (ver "portero: ataja lo de frente y lo flojo" en `possession.test.ts`), así
+  que no hizo falta forzar nada más: un supertiro de verdad ya es lo que hace falta para convertir.
 
 ### Posesión: al que le hacen el gol, sale con la pelota
 
@@ -258,10 +263,22 @@ mucho más reales; la síntesis se reserva para efectos y, más adelante, la ban
 
 ### Modo Copa
 
-- Elegís 4 equipos (de fábrica o creados por vos); el sorteo arma las dos semifinales al azar.
-- Eliminación directa: semifinal 1, semifinal 2, final. La Copa **no admite empates**: si un cruce
-  termina igualado, sigue el mismo partido en muerte súbita (gol de oro, 60 s); si nadie anota, se repite
-  otro período, hasta que hay ganador — nunca hace falta rejugar el partido completo.
+- **Elegís UN equipo** (el tuyo) y el nivel de los rivales; los otros 3 salen al azar. Antes se elegían
+  4 equipos sueltos, sin ningún concepto de "el mío" — y tenía un bug real: el ganador de la semifinal 1
+  siempre quedaba "local" en la final, así que si tu equipo salía de la semifinal 2, en la final
+  terminabas controlando al equipo EQUIVOCADO. Se arregló con un truco simple: tu equipo siempre va
+  primero en `teamIds` (`newCup`), así el bracket ya garantiza que seas local en cada cruce que juegues
+  — sin tocar nada de la lógica en `cup.ts`.
+- **Bracket visual de verdad** (SVG con líneas conectoras, no una lista apilada de "vs"): las 4 hojas,
+  las dos semis, la final y el trofeo cuando hay campeón — tu equipo con un aro dorado en cada casillero
+  donde aparece. Encontré y corregí un bug real armándolo: las columnas quedaban superpuestas (sin
+  espacio para las líneas) hasta que lo verifiqué con una imagen renderizada de verdad, no solo leyendo
+  el código.
+- Eliminación directa: semifinal 1, semifinal 2, final. La Copa **no admite empates de verdad**: si un
+  cruce termina igualado, se define por **penales — 3 por lado, alternados, mano a mano** (mismo
+  mecanismo que el penal de 3 faltas). Si siguen empatados después de los 3, se sigue una ronda más a
+  la vez hasta que se decida — nunca hace falta rejugar el partido completo. La lógica de turnos/rondas
+  es pura y está en `lib/game/shootout.ts` (testeada aparte de todo lo que toca DOM/canvas).
 - El progreso queda guardado (`localStorage`): se puede cerrar la app a mitad de la Copa y seguir después.
 - Desde la pausa de un partido de Copa, "reiniciar" repite ese mismo cruce y "salir" vuelve a la llave
   (no al menú de partido suelto).
@@ -428,10 +445,19 @@ y jugar unas partidas de verdad — Copa, demo, entrenamiento, un gol de combo �
 - **Los botones arriba a la derecha** también pueden tapar a un jugador que pase por esa esquina (son
   semitransparentes); si molestan, la alternativa es dejar solo pausa y mover vista/pantalla/sonido a la
   pantalla de pausa.
-- **Banda de la galería** (bombo, redoblante, trompetas): sin hacer. Los audios de público ya están; falta
-  decidir si se sintetiza o se usa música (los "MIDI clásicos" requieren un secuenciador y, por los
-  derechos, versiones propias o de dominio público real).
-- **Playwright como `devDependency`**: pendiente, requiere red para regenerar los archivos de bloqueo.
+- **Corrección de audio**: el archivo `...protest-02-58325.mp3` NO es abucheo/protesta (lo parecía por
+  el nombre) — Ignacio confirmó que son tambores de estadio. Se reprocesó como `crowd-drums.mp3` y se
+  conectó al momento de tensión del penal (`reactionFor` en `crowd-mix.ts`). El "abucheo cuando anota el
+  rival" que se había armado sobre ese archivo se sacó: hoy el gol del rival apaga el entusiasmo del
+  público (silencio), no hay ningún audio real de abucheo todavía. `...ja-ganhou-17080.mp3` tampoco es
+  un cántico puntual — es público gritando, en general; se sigue usando igual para el festejo de
+  partido ganado, pero la documentación ya no asume que dice algo específico.
+- **Banda de la galería** (bombo, redoblante, trompetas, como un CONJUNTO musical): sin hacer. Los
+  tambores de estadio ya están (recién agregados, ver arriba), pero eso es ambiente de multitud, no una
+  banda tocando — falta decidir si se sintetiza o se usa música (los "MIDI clásicos" requieren un
+  secuenciador y, por los derechos, versiones propias o de dominio público real).
+- **Playwright**: no se suma como dependencia — a pedido de Ignacio, alcanza con el agradecimiento en
+  los créditos.
 - **Chips de expulsados** (tarjeta azul, con cuenta atrás de segundos) que sí tenía la barra vieja —
   no entraban en la placa chica nueva. El conteo de faltas por equipo se mantiene, el detalle de
   "quién y cuánto le queda" quedó afuera.

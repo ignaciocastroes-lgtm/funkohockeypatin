@@ -122,4 +122,16 @@ export const CSS = `
 }
 @media (max-width:420px){.fp-sticky .fp-btn{letter-spacing:.04em;padding:10px 8px;font-size:13px;flex-basis:0}}
 @media (prefers-reduced-motion:reduce){.fp-root *{animation:none!important;transition:none!important}}
+
+.fp-celebration{position:relative;overflow:hidden;padding:20px 8px 6px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.fp-cel-banner{font-family:var(--font-arcade),monospace;font-size:clamp(15px,4.2vw,26px);color:var(--c);text-shadow:0 0 14px var(--c);letter-spacing:.05em;padding:8px 18px;border:2px solid var(--c);border-radius:6px;background:rgba(0,0,0,.55);transform:rotate(-2deg);animation:fp-banner-wave 2.2s ease-in-out infinite}
+.fp-cel-stage{display:flex;align-items:flex-end;justify-content:center;gap:6px;height:60px}
+.fp-cel-player{font-size:28px;display:inline-block;animation:fp-jump .6s ease-in-out infinite;filter:drop-shadow(0 4px 4px rgba(0,0,0,.5))}
+.fp-cel-trophy{font-size:42px;display:inline-block;filter:drop-shadow(0 0 10px #facc15);animation:fp-trophy-bob 1.1s ease-in-out infinite}
+.fp-cel-team{margin:0;font-weight:800;letter-spacing:.04em;font-size:15px;text-align:center}
+.fp-cel-confetti{position:absolute;top:-10px;width:8px;height:8px;border-radius:2px;animation:fp-confetti-fall 2.6s linear infinite}
+@keyframes fp-banner-wave{0%,100%{transform:rotate(-2deg)}50%{transform:rotate(2deg)}}
+@keyframes fp-jump{0%,100%{transform:translateY(0)}50%{transform:translateY(-15px)}}
+@keyframes fp-trophy-bob{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-9px) rotate(4deg)}}
+@keyframes fp-confetti-fall{0%{transform:translateY(-10px) rotate(0deg);opacity:1}100%{transform:translateY(170px) rotate(360deg);opacity:0}}
 `

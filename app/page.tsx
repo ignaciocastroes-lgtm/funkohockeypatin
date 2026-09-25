@@ -12,6 +12,15 @@ export default function Page() {
   const host = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    // Service worker: hace que la PWA sea instalable en Android y que el partido funcione sin
+    // conexión. Se registra solo en producción (en `next dev` los chunks cambian todo el tiempo
+    // y una caché de por medio solo estorba).
+    if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => undefined)
+    }
+  }, [])
+
+  useEffect(() => {
     const el = host.current
     if (!el) return
     const q = new URLSearchParams(window.location.search)

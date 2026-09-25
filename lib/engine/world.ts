@@ -95,7 +95,7 @@ function placeKickoff(w: World) {
   }
 }
 
-function awardPenalty(w: World, side: Side) {
+export function awardPenalty(w: World, side: Side) {
   const geom = GOALS[side === 0 ? 1 : 0] // el arco RIVAL: ahí tira
   const own = w.skaters.filter((s) => s.side === side)
   const shooter = own.find((s) => s.isCaptain) ?? own[0]
@@ -117,6 +117,8 @@ function awardPenalty(w: World, side: Side) {
   shooter.heading = heading
   shooter.stickAngle = heading
   shooter.controlGrace = 0.5
+  shooter.stamina = 100 // el penal siempre es con el tanque lleno — nunca le "gana" el cansancio
+  // del partido, ni entre intentos de una misma tanda: así siempre puede ser un supertiro de verdad.
   for (const g of w.goalies) {
     const gg = GOALS[g.side]
     g.x = gg.lineX - gg.dir * GOALIE.standoff

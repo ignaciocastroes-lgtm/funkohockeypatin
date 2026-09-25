@@ -1,0 +1,21 @@
+{
+  "name": "Liga Funko-Patín Arcade",
+  "short_name": "Funko-Patín",
+  "description": "Hockey sobre patines arcade en pista de 40 x 20 m. Jugá con dos dedos: uno mueve, el otro pasa y tira. Vertical u horizontal, con zoom de pellizco.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "id": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone", "minimal-ui", "browser"],
+  "orientation": "any",
+  "background_color": "#050914",
+  "theme_color": "#050914",
+  "lang": "es",
+  "dir": "ltr",
+  "categories": ["games", "sports"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

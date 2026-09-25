@@ -1,13 +1,34 @@
 import type { GameEvent } from "../engine"
 
+declare global {
+  interface Window {
+    /** En el build de un solo archivo (juego.html) los audios van incrustados como data: URI. */
+    __FP_AUDIO__?: Record<string, string>
+  }
+}
+
+/** Dónde está un audio: incrustado (juego.html) o en /audio/ (build de Next). Lo usa también `crowd.ts`. */
+export function audioUrl(file: string): string {
+  const inline = typeof window !== "undefined" ? window.__FP_AUDIO__?.[file] : undefined
+  return inline ?? `/audio/${file}`
+}
+
+/** Muestras de audio (no del público) que usa `Sfx` directamente — hoy solo el silbato real. */
+export const SFX_FILES = {
+  whistle: "ref-whistle.mp3",
+} as const
+
 /**
- * Sonidos sintetizados mínimos.
+ * Sonidos sintetizados mínimos, más el silbato real (grabación, no síntesis — se carga una vez y
+ * cae de nuevo al silbato sintetizado si todavía no cargó o falló, el juego nunca espera por esto).
  * - El AudioContext se crea en el primer gesto y se reanuda en CADA gesto (iOS lo exige en touchend/click).
  * - `close()` libera el contexto al salir del partido (Safari limita cuántos puede haber abiertos).
  */
 export class Sfx {
   private ctx: AudioContext | null = null
   private last: Record<string, number> = {}
+  private whistleBuf: AudioBuffer | null = null
+  private whistleLoading = false
   muted = false
 
   /** El AudioContext (null hasta el primer gesto). Lo comparte el público (`crowd.ts`). */
@@ -20,7 +41,20 @@ export class Sfx {
         if (AC) this.ctx = new AC()
       }
       if (this.ctx && this.ctx.state === "suspended") void this.ctx.resume()
+      if (this.ctx && !this.whistleBuf && !this.whistleLoading) this.loadWhistle(this.ctx)
     } catch { /* sin audio, el juego sigue */ }
+  }
+
+  private loadWhistle(ctx: AudioContext) {
+    this.whistleLoading = true
+    fetch(audioUrl(SFX_FILES.whistle))
+      .then((r) => r.arrayBuffer())
+      .then((data) => new Promise<AudioBuffer>((resolve, reject) => {
+        const p = ctx.decodeAudioData(data, resolve, reject)
+        if (p && typeof (p as Promise<AudioBuffer>).then === "function") (p as Promise<AudioBuffer>).then(resolve, reject)
+      }))
+      .then((buf) => { this.whistleBuf = buf })
+      .catch(() => { /* sin silbato real: se queda con el sintetizado, el juego sigue igual */ })
   }
 
   close() {
@@ -74,13 +108,25 @@ export class Sfx {
     src.stop(now + dur + 0.02)
   }
 
-  /** Silbato: ataque bien rápido y un trino agudo, no un simple barrido de tono. */
+  /** Silbato: grabación real si ya cargó (`ref-whistle.mp3`); si no, el sintetizado de siempre
+   *  (ataque bien rápido y un trino agudo, no un simple barrido de tono). */
   private whistle(kind: string, dur: number, vol: number, minGap = 0.5) {
     const c = this.ctx
     if (this.muted || !c || c.state !== "running") return
     const now = c.currentTime
     if (now - (this.last[kind] ?? -1) < minGap) return
     this.last[kind] = now
+    if (this.whistleBuf) {
+      const src = c.createBufferSource()
+      src.buffer = this.whistleBuf
+      const g = c.createGain()
+      g.gain.value = Math.min(1, vol * 1.6) // la grabación ya viene nivelada, no necesita el mismo vol que el sintetizado
+      src.connect(g)
+      g.connect(c.destination)
+      src.start(now)
+      src.onended = () => { try { src.disconnect(); g.disconnect() } catch { /* ya soltado */ } }
+      return
+    }
     const o = c.createOscillator()
     const g = c.createGain()
     o.type = "square"
