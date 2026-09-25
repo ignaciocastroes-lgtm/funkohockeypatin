@@ -893,9 +893,9 @@ const EMOJI_FONT = "'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',syst
  * caja de puntos es el color del equipo en la cancha. El combo son lámparas debajo; la energía, una
  * rayita al pie.
  */
-export function drawHud(ctx: CanvasRenderingContext2D, w: World, cam: Camera, o: DrawOptions) {
-  const vw = cam.vw
-  const vh = cam.vh
+export function drawHud(ctx: CanvasRenderingContext2D, w: World, o: DrawOptions, hudW: number, hudH: number) {
+  const vw = hudW
+  const vh = hudH
   const { boxW, boxH: fullH } = plateSize(vw, vh)
   const boxH = fullH - PLATE_BRAND_H // alto del marcador en sí (sin la tira de marca de arriba)
   const bx = 8

@@ -36,6 +36,12 @@ export interface AppHandle {
 type Screen = "menu" | "setup" | "editor" | "credits" | "match" | "cup" | "training"
 type Child = Node | string | null | undefined | false
 
+/** Evento no estándar (Chrome/Edge/Android) que avisa que la página se puede instalar como app. */
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>
+  readonly userChoice: Promise<{ outcome: "accepted" | "dismissed" }>
+}
+
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...kids: Child[]): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag)
   for (const [k, v] of Object.entries(props)) {
@@ -74,6 +80,16 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   let draft: TeamDraft = newDraft()
   let draftError = ""
   let dialog: HTMLElement | null = null
+  // ---------- instalar como app ----------
+  // Chrome/Edge/Android avisan con este evento cuando la página es instalable; lo guardamos para
+  // poder disparar el diálogo nativo desde un botón nuestro (si no se captura, como en iOS/Safari
+  // que no tiene este evento, el botón igual aparece y explica cómo agregarla a mano).
+  let installPromptEvent: BeforeInstallPromptEvent | null = null
+  let installedThisSession = false
+  const onBeforeInstallPrompt = (e: Event) => { e.preventDefault(); installPromptEvent = e as BeforeInstallPromptEvent; render() }
+  const onAppInstalled = () => { installedThisSession = true; installPromptEvent = null; render() }
+  window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt)
+  window.addEventListener("appinstalled", onAppInstalled)
 
   root.classList.add("fp-root")
   const style = h("style")
@@ -163,6 +179,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
           ? h("button", { class: "fp-btn gr", "data-key": "training", onclick: () => go("training") }, "Modo entrenamiento")
           : null,
         h("button", { class: "fp-btn te", "data-key": "credits", onclick: () => go("credits") }, "Créditos"),
+        canOfferInstall() ? h("button", { class: "fp-btn gr", "data-key": "install", onclick: () => handleInstallClick() }, "📲 Instalar la app") : null,
       ),
       // marca al pie: el marcador del juego es el de ardisport.cl (texto, no link: un link chico rompería los 44 px)
       h("p", { class: "fp-foot" }, "ardisport.cl"),
@@ -891,6 +908,32 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     toggleFullscreen()
   }
 
+  /** Se ofrece el botón de instalar salvo que ya esté corriendo instalada (o se acabe de instalar
+   *  en esta misma sesión, antes de que el navegador la relance en modo standalone). */
+  function canOfferInstall(): boolean { return !installedThisSession && !isStandalonePwa() }
+
+  async function handleInstallClick() {
+    if (installPromptEvent) {
+      const evt = installPromptEvent
+      installPromptEvent = null
+      try {
+        await evt.prompt()
+        const choice = await evt.userChoice
+        if (choice.outcome === "accepted") installedThisSession = true
+      } catch { /* el usuario cerró el diálogo nativo, o el navegador no lo soportó a último momento */ }
+      render()
+      return
+    }
+    // Sin el evento nativo (iOS/Safari, o Chrome que todavía no decidió que es instalable):
+    // instrucciones a mano, según lo que se puede inferir del user agent.
+    const ua = navigator.userAgent
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes("Macintosh") && navigator.maxTouchPoints > 1)
+    const text = isIOS
+      ? "Tocá el ícono de compartir (el cuadradito con la flecha hacia arriba) y elegí «Agregar a inicio»."
+      : "Abrí el menú del navegador (⋮ o ⋯) y elegí «Instalar app» o «Agregar a la pantalla de inicio»."
+    showDialog("Instalar la app", text, [{ label: "Entendido", primary: true }])
+  }
+
   function showPause(wrap: HTMLElement) {
     if (!match || match.ended || dialog) return
     match.pause()
@@ -977,6 +1020,8 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       destroyed = true
       document.removeEventListener("keydown", onKey)
       window.removeEventListener("resize", fitScrollPadding)
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt)
+      window.removeEventListener("appinstalled", onAppInstalled)
       stopMatch()
       root.replaceChildren()
       root.classList.remove("fp-root")

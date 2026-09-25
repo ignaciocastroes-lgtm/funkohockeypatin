@@ -544,10 +544,6 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       cam.frame(vw, vh, viewMode === "full" ? fullW : fullW * 0.62, RINK.length / 2, RINK.width / 2)
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    // Vertical: rota todo el dibujo (cancha, HUD, overlays) 90° para llenar la pantalla en mano.
-    // La cancha "horizontal" de siempre queda intacta en el espacio virtual (vw x vh) — solo se
-    // gira al volcarla sobre el canvas real (cssW x cssH).
-    if (portrait) { ctx.translate(cssW, 0); ctx.rotate(Math.PI / 2) }
 
     // Gol: mientras dura la pausa de festejo, se reproduce en cámara lenta lo que pasó
     // justo antes (en vez de la escena congelada). Si ya salimos de esa fase, se corta.
@@ -560,16 +556,25 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       goalReplay = null
     }
     const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement }
+
+    // Cancha, joystick y línea de apuntado: viven en el espacio "virtual" horizontal y se rotan 90°
+    // en vertical (junto con el toque, que se traduce al mismo espacio — ver toVirtual arriba).
+    ctx.save()
+    if (portrait) { ctx.translate(cssW, 0); ctx.rotate(Math.PI / 2) }
     drawScene(ctx, sceneWorld, cam, opts)
-    if (flash) {
-      drawFlash(ctx, flash, now, vw, vh)
-      if (now - flash.startedAt > flash.durationMs) flash = null
-    }
     confetti.update(dt)
     confetti.draw(ctx, vw, vh)
-    drawHud(ctx, world, cam, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo })
     drawTouchOverlay(ctx, world, cam, input, controlledId)
-    if (banner && now < banner.until) drawBanner(ctx, banner.text, vw, vh)
+    ctx.restore()
+
+    // Marcador, banners y texto: SIEMPRE derechos, nunca rotados — un cartel de puntaje girado 90°
+    // no se lee. Se dibujan aparte, ya sin la rotación, usando el tamaño real de la pantalla.
+    if (flash) {
+      drawFlash(ctx, flash, now, cssW, cssH)
+      if (now - flash.startedAt > flash.durationMs) flash = null
+    }
+    drawHud(ctx, world, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo }, cssW, cssH)
+    if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
     if (o.debug) drawDebug(ctx, fpsSmooth, stepsThisFrame, world)
   }
   raf = requestAnimationFrame(frame)

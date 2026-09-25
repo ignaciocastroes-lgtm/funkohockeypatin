@@ -81,10 +81,17 @@ export interface Rect { x0: number; y0: number; x1: number; y1: number }
 /** Tamaño de la placa del marcador (compartido con drawHud para que ambos coincidan). */
 /** Alto (px) de la tira de marca "ARDISPORT.CL" arriba de la placa. Se suma al alto del marcador. */
 export const PLATE_BRAND_H = 10
+/** Hasta 5 botones de 46 px con 8 px de separación (pausa/vista/pantalla/sonido/música), arriba a
+ *  la derecha. Compartido con `plateSize` para que la placa nunca crezca tanto en una pantalla
+ *  angosta (el celular en vertical) que se pise con esta barra. */
+export const HUD_BUTTONS_W = 8 + 5 * 46 + 4 * 8
 
 export function plateSize(vw: number, vh: number): { boxW: number; boxH: number } {
   return {
-    boxW: Math.max(184, Math.min(vw * 0.46, 260)),
+    // El tercer término solo entra en juego cuando `vw` es angosto de verdad (la pantalla REAL en
+    // vertical, no el ancho "virtual" con el que se calcula la cancha): sin él, en un celular común
+    // la placa (mínimo 184px) más la barra de botones (~270px) no entran juntas en el mismo ancho.
+    boxW: Math.max(140, Math.min(vw * 0.46, 260, vw - HUD_BUTTONS_W - 16)),
     // el marcador en sí (56..86) más la tira de marca arriba
     boxH: Math.max(56, Math.min(vh * 0.22, 86)) + PLATE_BRAND_H,
   }
@@ -92,15 +99,14 @@ export function plateSize(vw: number, vh: number): { boxW: number; boxH: number 
 
 /**
  * Zonas de pantalla ocupadas por la interfaz fija: la placa del marcador (con sus lámparas de combo,
- * arriba a la izquierda) y los 4 botones de pausa/vista/pantalla/sonido (arriba a la derecha: abajo a
- * la izquierda tapaban jugadores y quedaban justo bajo el pulgar del joystick).
+ * arriba a la izquierda) y los botones de pausa/vista/pantalla/sonido/música (arriba a la derecha:
+ * abajo a la izquierda tapaban jugadores y quedaban justo bajo el pulgar del joystick).
  */
 export function hudAvoidRects(vw: number, vh: number): Rect[] {
   const { boxW, boxH } = plateSize(vw, vh)
-  const buttonsW = 8 + 5 * 46 + 4 * 8 // hasta 5 botones de 46 px con 8 px de separación (pausa/vista/pantalla/sonido/música)
   return [
     { x0: 0, y0: 0, x1: 8 + boxW, y1: 8 + boxH + 34 },
-    { x0: vw - buttonsW, y0: 0, x1: vw, y1: 8 + 46 + 6 },
+    { x0: vw - HUD_BUTTONS_W, y0: 0, x1: vw, y1: 8 + 46 + 6 },
   ]
 }
 

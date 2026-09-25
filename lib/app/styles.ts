@@ -88,6 +88,13 @@ export const CSS = `
 .fp-hud button{--c:#fff;width:46px;height:46px;min-height:0;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(0,0,0,.55);color:#fff;box-shadow:none;opacity:.7;font-size:18px;letter-spacing:0}
 .fp-hud button.view{font-size:12px;font-weight:800}
 .fp-hud button:hover,.fp-hud button:focus-visible{opacity:1;background:rgba(0,0,0,.8);color:#fff}
+/* Celular en vertical: la placa del marcador y esta barra (hasta 5 botones) comparten el mismo
+   ancho angosto de la pantalla real — achicando los botones les queda más lugar a los dos. */
+@media (max-width:460px){
+  .fp-hud{gap:5px}
+  .fp-hud button{width:38px;height:38px;font-size:15px;border-radius:8px}
+  .fp-hud button.view{font-size:10.5px}
+}
 
 .fp-overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(2,6,16,.82);backdrop-filter:blur(3px);animation:fp-in .25s ease-out}
 @keyframes fp-in{from{opacity:0}to{opacity:1}}

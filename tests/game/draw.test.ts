@@ -75,7 +75,7 @@ test("dibujo: escena y marcador en todas las fases, con y sin humano, en 3 tama√
         const cam = camFor(w, vw, vh)
         const { ctx, bad } = spyCtx()
         drawScene(ctx, w, cam, opts(hs, "L1"))
-        drawHud(ctx, w, cam, { ...opts(hs, "L1"), showHint: true, demo: hs === null })
+        drawHud(ctx, w, { ...opts(hs, "L1"), showHint: true, demo: hs === null }, vw, vh)
         assert.deepEqual(bad, [], `fase ${phase}, humano ${hs}, ${vw}x${vh}`)
       }
     }
@@ -86,8 +86,7 @@ test("dibujo: marcador con puntos y faltas de 3 cifras no se rompe (se topa en 9
   const w = createWorld({ goalies: false })
   w.score = [150, 7]
   w.fouls = [0, 123]
-  const cam = camFor(w, 844, 390)
   const { ctx, bad } = spyCtx()
-  drawHud(ctx, w, cam, opts(0, "L1"))
+  drawHud(ctx, w, opts(0, "L1"), 844, 390)
   assert.deepEqual(bad, [])
 })
