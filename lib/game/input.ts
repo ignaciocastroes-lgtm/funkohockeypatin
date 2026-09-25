@@ -2,10 +2,11 @@
  * Entrada de dos dedos. Lógica PURA (sin DOM) para poder probarla con tests.
  *
  *  - Dedo de MOVIMIENTO (mitad izquierda): joystick flotante. Nace donde tocas.
- *  - Dedo de ACCIÓN (mitad derecha): un deslizamiento (flick) = pase o tiro.
- *      · La dirección del deslizamiento es la dirección del pase/tiro.
- *      · La velocidad del deslizamiento es la potencia (suave = pase, latigazo = tiro).
- *      · Un toque sin deslizar = pase automático al mejor compañero.
+ *  - Dedo de ACCIÓN (mitad derecha): estilo Angry Birds — tocás y ESTIRÁS hacia atrás (lejos de
+ *    donde querés tirar), soltás y sale para el lado contrario, como una honda.
+ *      · La dirección del tiro es la opuesta a hacia dónde estiraste.
+ *      · Cuánto estiraste es la potencia (poco = pase, bien estirado = tiro fuerte).
+ *      · Un toque sin estirar = pase automático al mejor compañero.
  *  - PASE DE UN DEDO: un toque rápido (corto, sin arrastrar) con CUALQUIER dedo, incluido el de
  *    movimiento, es un `tap` con su posición en pantalla. Si cae sobre un compañero (o sobre su flecha
  *    de borde), el pase va a ese compañero. El toque del dedo de movimiento es `strict`: si no cae
@@ -24,6 +25,12 @@ export type ActionEvent =
       y?: number
       /** true = vino del dedo de movimiento: solo vale si cae sobre un compañero. */
       strict?: boolean
+    }
+  | {
+      /** Esquema "botones": pase o tiro por botón, con medidor de potencia (0..1) en vez de gesto. */
+      kind: "button"
+      action: "pase" | "tiro"
+      power: number
     }
 
 /** Teclas de movimiento en escritorio: WASD y flechas, cualquiera de las dos funciona. */
@@ -64,20 +71,21 @@ export interface TouchInputOptions {
   height: number
   /** true = joystick a la derecha, acción a la izquierda. */
   leftHanded?: boolean
+  /** Esquema "botones": no hay zona de acción — toda la pantalla es el stick de movimiento (el
+   *  pase y el tiro salen de botones aparte, no de un gesto acá). */
+  buttonsMode?: boolean
 }
 
-interface Sample { t: number; x: number; y: number }
-
-/** Ventana (s) sobre la que se mide la velocidad de salida del dedo. */
-const FLICK_WINDOW = 0.09
 /** Un toque: recorre menos de esta fracción de la altura y dura menos de TAP_MAX_TIME.
  *  Un pulgar real nunca queda tan quieto como un test automatizado — 0.05/0.3 salían bien en los
  *  tests (que tocan con precisión de píxel) pero en la mano el pase de un toque fallaba seguido
  *  porque el pulgar se corre un poco al levantar. Más ancho acá, sin tocar FLICK_MIN_DIST. */
 const TAP_MAX_DIST = 0.065
 const TAP_MAX_TIME = 0.35
-/** Recorrido mínimo (fracción de la altura) para considerarlo deslizamiento. */
-const FLICK_MIN_DIST = 0.05
+/** Recorrido mínimo (fracción de la altura) para que cuente como un estirón (si no, es un toque). */
+export const FLICK_MIN_DIST = 0.05
+/** Estirón que ya da la potencia máxima (fracción de la altura) — de ahí no sigue creciendo. */
+export const FLICK_MAX_DIST = 0.32
 /** Radio del joystick (fracción del lado corto de la pantalla). */
 const STICK_RADIUS = 0.17
 const DEADZONE = 0.12
@@ -88,6 +96,7 @@ export class TouchInput {
   width: number
   height: number
   leftHanded: boolean
+  buttonsMode: boolean
 
   /** Vector de movimiento, magnitud <= 1. */
   moveX = 0
@@ -99,7 +108,6 @@ export class TouchInput {
   aim: { sx: number; sy: number; cx: number; cy: number } | null = null
 
   private roles = new Map<number, Role>()
-  private samples: Sample[] = []
   private startT = 0
   private startX = 0
   private startY = 0
@@ -113,6 +121,7 @@ export class TouchInput {
     this.width = o.width
     this.height = o.height
     this.leftHanded = !!o.leftHanded
+    this.buttonsMode = !!o.buttonsMode
   }
 
   resize(w: number, h: number) { this.width = w; this.height = h }
@@ -126,6 +135,16 @@ export class TouchInput {
 
   down(id: number, x: number, y: number, t: number) {
     if (this.roles.has(id)) return
+    if (this.buttonsMode) {
+      // Sin zona de acción: cualquier dedo es el stick (solo importa el primero; un segundo dedo
+      // no hace nada acá — el pase y el tiro son los botones aparte).
+      if (this.roleOf("move") !== null) return
+      this.roles.set(id, "move")
+      this.stick = { ox: x, oy: y, cx: x, cy: y, radius: this.radius }
+      this.moveX = 0
+      this.moveY = 0
+      return
+    }
     const inLeft = x < this.width / 2
     const wantsMove = this.leftHanded ? !inLeft : inLeft
     let role: Role = wantsMove ? "move" : "action"
@@ -141,7 +160,6 @@ export class TouchInput {
       this.startT = t
       this.startX = x
       this.startY = y
-      this.samples = [{ t, x, y }]
       this.aim = { sx: x, sy: y, cx: x, cy: y }
     }
   }
@@ -173,8 +191,6 @@ export class TouchInput {
     } else if (role === "action" && this.aim) {
       this.aim.cx = x
       this.aim.cy = y
-      this.samples.push({ t, x, y })
-      if (this.samples.length > 32) this.samples.shift()
     }
   }
 
@@ -193,10 +209,8 @@ export class TouchInput {
       if (dist < TAP_MAX_DIST * h && t - this.mvT <= TAP_MAX_TIME) return { kind: "tap", x, y, strict: true }
       return null
     }
-    this.samples.push({ t, x, y })
     const ev = this.resolveAction(x, y, t)
     this.aim = null
-    this.samples = []
     return ev
   }
 
@@ -204,9 +218,12 @@ export class TouchInput {
     const role = this.roles.get(id)
     if (!role) return
     this.roles.delete(id)
-    if (role === "move") { this.stick = null; this.moveX = 0; this.moveY = 0 } else { this.aim = null; this.samples = [] }
+    if (role === "move") { this.stick = null; this.moveX = 0; this.moveY = 0 } else { this.aim = null }
   }
 
+  /** Estilo Angry Birds: `(x,y)` es dónde soltaste, lejos del punto donde tocaste (`startX/Y`) — la
+   *  honda tira para el lado CONTRARIO a como la estiraste. Cuanto más la estiraste, más potencia,
+   *  hasta `FLICK_MAX_DIST` (de ahí no sigue creciendo). Nada de velocidad: solo cuánto y hacia dónde. */
   private resolveAction(x: number, y: number, t: number): ActionEvent | null {
     const h = Math.max(1, this.height)
     const total = Math.hypot(x - this.startX, y - this.startY)
@@ -216,25 +233,9 @@ export class TouchInput {
     }
     if (total < FLICK_MIN_DIST * h) return null
 
-    // velocidad de salida: primer sample dentro de la ventana final -> último
-    const last = this.samples[this.samples.length - 1]
-    let first = last
-    for (let i = this.samples.length - 1; i >= 0; i--) {
-      if (last.t - this.samples[i].t <= FLICK_WINDOW) first = this.samples[i]
-      else break
-    }
-    const dt = last.t - first.t
-    const dist = Math.hypot(last.x - first.x, last.y - first.y)
-    let angle: number
-    let pxPerSec: number
-    if (dt > 0.008 && dist > 0.012 * h) {
-      angle = Math.atan2(last.y - first.y, last.x - first.x)
-      pxPerSec = dist / dt
-    } else {
-      // el dedo frenó antes de soltar: usa el recorrido completo (deslizamiento lento = pase suave)
-      angle = Math.atan2(y - this.startY, x - this.startX)
-      pxPerSec = total / Math.max(dur, 0.05)
-    }
-    return { kind: "flick", angle, vhPerSec: pxPerSec / h }
+    const angle = Math.atan2(this.startY - y, this.startX - x) // opuesto al estirón, como una honda
+    const pull01 = Math.min(1, (total - FLICK_MIN_DIST * h) / ((FLICK_MAX_DIST - FLICK_MIN_DIST) * h))
+    const vhPerSec = 1.2 + pull01 * (6 - 1.2) // mismo rango que ya esperaba powerFromFlick()
+    return { kind: "flick", angle, vhPerSec }
   }
 }

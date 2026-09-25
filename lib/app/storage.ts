@@ -1,5 +1,6 @@
 import type { Nivel } from "../game/match"
 import type { MusicLevel } from "../game/crowd"
+import type { PuckKind } from "../engine"
 import { DEFAULT_TEAMS, MAX_CUSTOM_TEAMS, sanitizeTeam } from "./teams"
 import type { Team } from "./teams"
 import { sanitizeCup } from "./cup"
@@ -15,6 +16,9 @@ export interface Settings {
   localId: string
   visitId: string
   leftHanded: boolean
+  /** Esquema de control: "honda" (Angry Birds — estirás y soltás) o "botones" (arcade clásico —
+   *  el dedo maneja como un stick, pase y tiro son botones con medidor de potencia). */
+  controlScheme: "honda" | "botones"
   sound: boolean
   /** Música de fondo (ambiente de fiesta en las gradas, independiente de los efectos/público):
    *  prendida, atenuada o apagada — no afecta al resto del público ni a los efectos. */
@@ -23,6 +27,12 @@ export interface Settings {
   tutorialOptOut: boolean
   /** Modo entrenamiento desbloqueado (ganando la Copa, o con el atajo secreto). */
   trainingUnlocked: boolean
+  /** Peso de la bocha en partido normal (por defecto "normal") — ver `PUCK_KINDS` en el motor. */
+  puckKind: PuckKind
+  /** Modo ahorro: menos densidad de público y sin las banderitas de la tribuna — para que ande
+   *  mejor en celulares de gama baja. Vive acá (no en la pausa sola) porque también aplica en
+   *  el demo de arranque, antes de que exista ningún partido en pausa. */
+  graphicsSaver: boolean
 }
 
 export interface Saved {
@@ -38,10 +48,13 @@ export const DEFAULT_SETTINGS: Settings = {
   localId: DEFAULT_TEAMS[0].id,
   visitId: DEFAULT_TEAMS[1].id,
   leftHanded: false,
+  controlScheme: "honda",
   sound: true,
   music: "on",
   tutorialOptOut: false,
   trainingUnlocked: false,
+  puckKind: "normal",
+  graphicsSaver: false,
 }
 
 /** localStorage si existe y funciona (modo privado, cookies bloqueadas, SSR => null). */
@@ -101,6 +114,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.localId === "string") out.settings.localId = s.localId
     if (typeof s.visitId === "string") out.settings.visitId = s.visitId
     if (typeof s.leftHanded === "boolean") out.settings.leftHanded = s.leftHanded
+    if (s.controlScheme === "honda" || s.controlScheme === "botones") out.settings.controlScheme = s.controlScheme
     if (typeof s.sound === "boolean") out.settings.sound = s.sound
     if (s.music === "on" || s.music === "low" || s.music === "off") out.settings.music = s.music
     else if (typeof s.music === "boolean") out.settings.music = s.music ? "on" : "off" // migración de una versión anterior (era on/off nomás)
@@ -108,6 +122,8 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     // migración: quien ya lo había visto (versión anterior) no lo necesita de nuevo
     else if (s.seenTutorial === true) out.settings.tutorialOptOut = true
     if (typeof s.trainingUnlocked === "boolean") out.settings.trainingUnlocked = s.trainingUnlocked
+    if (s.puckKind === "liviana" || s.puckKind === "normal" || s.puckKind === "pesada") out.settings.puckKind = s.puckKind
+    if (typeof s.graphicsSaver === "boolean") out.settings.graphicsSaver = s.graphicsSaver
     out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)
   } catch {

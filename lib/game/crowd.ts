@@ -1,9 +1,9 @@
 import { GOALS } from "../engine"
 import type { GameEvent, Side, World } from "../engine"
 import {
-  CROWD, bedGain, energyGain, equalPowerCurve, musicGain, nextLoopStart, panFor, pickVariant, pressure, reactionFor, smoothExcitement,
+  CROWD, bandGain, bedGain, energyGain, equalPowerCurve, musicGain, nextLoopStart, panFor, pickVariant, pressure, reactionFor, smoothExcitement,
 } from "./crowd-mix"
-import { audioUrl, type Sfx } from "./sfx"
+import { audioUrl, fetchAudioBytes, type Sfx } from "./sfx"
 
 /**
  * Público de las gradas: murmullo de fondo, entusiasmo que sube con la jugada, ovaciones de gol,
@@ -16,6 +16,7 @@ export const CROWD_FILES = {
   bedA: "crowd-bed-a.mp3",
   bedC: "crowd-bed-c.mp3",
   energy: "crowd-energy.mp3",
+  band: "crowd-band.mp3",
   roar1: "crowd-roar-1.mp3",
   roar2: "crowd-roar-2.mp3",
   react: "crowd-react.mp3",
@@ -32,7 +33,7 @@ export type MusicLevel = "on" | "low" | "off"
 export const musicMulFor = (level: MusicLevel): number => (level === "on" ? 1 : level === "low" ? CROWD.musicLow : 0)
 
 interface Layer {
-  key: "bedA" | "bedC" | "energy" | "fiesta"
+  key: "bedA" | "bedC" | "energy" | "band" | "fiesta"
   buf: AudioBuffer
   gain: GainNode
   /** Momento (reloj de audio) en que debe arrancar la próxima vuelta. */
@@ -85,9 +86,8 @@ export class Crowd {
     this.status = "loading"
     try {
       const entries = await Promise.all((Object.keys(CROWD_FILES) as Key[]).map(async (k) => {
-        const res = await fetch(audioUrl(CROWD_FILES[k]))
-        if (!res.ok) throw new Error(`no se pudo cargar ${CROWD_FILES[k]}`)
-        return [k, await decode(ctx, await res.arrayBuffer())] as const
+        const bytes = await fetchAudioBytes(audioUrl(CROWD_FILES[k]))
+        return [k, await decode(ctx, bytes)] as const
       }))
       if (this.stopped) return
       for (const [k, b] of entries) this.buffers[k] = b
@@ -110,7 +110,7 @@ export class Crowd {
     master.connect(comp)
     comp.connect(ctx.destination)
     this.master = master
-    for (const key of ["bedA", "bedC", "energy", "fiesta"] as const) {
+    for (const key of ["bedA", "bedC", "energy", "band", "fiesta"] as const) {
       const buf = this.buffers[key]
       if (!buf) continue
       const gain = ctx.createGain()
@@ -164,7 +164,7 @@ export class Crowd {
     this.master.gain.setTargetAtTime(silent ? 0 : CROWD.master * duck, now, silent ? 0.08 : 0.12)
 
     for (const l of this.layers) {
-      const target = l.key === "energy" ? energyGain(e) : l.key === "fiesta" ? musicGain(e, this.musicMul) : bedGain(e) * (l.key === "bedC" ? 0.85 : 1)
+      const target = l.key === "energy" ? energyGain(e) : l.key === "band" ? bandGain(e) : l.key === "fiesta" ? musicGain(e, this.musicMul) : bedGain(e) * (l.key === "bedC" ? 0.85 : 1)
       l.gain.gain.setTargetAtTime(target, now, 0.35)
       while (l.nextStart < now + 3) this.startVoice(ctx, l, Math.max(l.nextStart, now + 0.02))
     }

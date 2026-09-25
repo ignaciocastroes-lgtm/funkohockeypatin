@@ -21,7 +21,9 @@ export const CSS = `
 .fp-menu{gap:22px}
 .fp-foot{position:absolute;left:0;right:0;bottom:max(4px,env(safe-area-inset-bottom));margin:0;text-align:center;font-size:11px;letter-spacing:.16em;color:#4ade80;opacity:.6;pointer-events:none;user-select:none}
 .fp-brand{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
-.fp-bolt{width:64px;height:64px;border-radius:50%;border:4px solid #ea580c;display:grid;place-items:center;box-shadow:0 0 28px #ea580c;color:#ea580c}
+.fp-bolt{width:64px;height:64px;border-radius:50%;border:4px solid #ea580c;display:grid;place-items:center;box-shadow:0 0 28px #ea580c;color:#ea580c;cursor:pointer;-webkit-tap-highlight-color:transparent;overflow:hidden}
+.fp-bolt img{width:100%;height:100%;object-fit:cover;border-radius:50%;display:block}
+.fp-tap-hint{min-height:16px;font-size:12px;color:#fbbf24;letter-spacing:.03em}
 .fp-h1{margin:0;font-size:clamp(20px,5.2vw,52px);line-height:1.15;color:#f97316;text-shadow:0 0 16px rgba(234,88,12,.85)}
 .fp-sub{display:flex;align-items:center;gap:12px;color:#22d3ee;letter-spacing:.45em;font-size:clamp(12px,2.6vw,26px)}
 .fp-sub i{display:block;height:2px;width:clamp(24px,8vw,80px);background:#22d3ee}
@@ -84,7 +86,7 @@ export const CSS = `
 .fp-sticky .fp-btn{flex:1 1 150px;max-width:260px;min-width:0}
 
 .fp-match{position:absolute;inset:0;background:#050914}
-.fp-hud{position:absolute;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));display:flex;gap:8px;z-index:5}
+.fp-hud{position:absolute;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));display:flex;flex-wrap:wrap;justify-content:flex-end;max-width:min(50vw,230px);gap:8px;z-index:5}
 .fp-hud button{--c:#fff;width:46px;height:46px;min-height:0;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(0,0,0,.55);color:#fff;box-shadow:none;opacity:.7;font-size:18px;letter-spacing:0}
 .fp-hud button.view{font-size:12px;font-weight:800}
 .fp-hud button:hover,.fp-hud button:focus-visible{opacity:1;background:rgba(0,0,0,.8);color:#fff}
@@ -111,7 +113,7 @@ export const CSS = `
 
 @media (max-height:520px) and (orientation:landscape){
   .fp-menu{flex-direction:row;gap:28px;justify-content:center}
-  .fp-bolt{width:48px;height:48px}.fp-bolt svg{width:26px;height:26px}
+  .fp-bolt{width:48px;height:48px}
   .fp-brand{flex:1;max-width:46%}.fp-actions{flex:1;gap:8px}.fp-btn{min-height:44px;padding:8px 14px}
   /* menú en 2 columnas: con 7 botones (entrenamiento desbloqueado) una sola columna no entra en 320-390 px de alto */
   .fp-menu .fp-actions{display:grid;grid-template-columns:1fr 1fr;align-content:center;gap:8px;max-width:none}
@@ -124,7 +126,7 @@ export const CSS = `
 }
 @media (max-height:640px) and (orientation:portrait){
   .fp-menu{gap:12px;padding-bottom:24px}.fp-menu .fp-actions{gap:8px}
-  .fp-menu .fp-brand{gap:4px}.fp-menu .fp-bolt{width:46px;height:46px;border-width:3px}.fp-menu .fp-bolt svg{width:24px;height:24px}
+  .fp-menu .fp-brand{gap:4px}.fp-menu .fp-bolt{width:46px;height:46px;border-width:3px}
   .fp-menu .fp-corner.bl,.fp-menu .fp-corner.br{display:none}
 }
 @media (max-width:420px){.fp-sticky .fp-btn{letter-spacing:.04em;padding:10px 8px;font-size:13px;flex-basis:0}}

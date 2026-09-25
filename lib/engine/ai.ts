@@ -62,7 +62,7 @@ export class TeamAI {
     return x
   }
 
-  update(w: World, humanId: string | null, dt: number) {
+  update(w: World, humanId: string | null, dt: number, sides: Side[] = [0, 1]) {
     if (w.phase !== "play") {
       for (const s of w.skaters) if (s.id !== humanId) setInput(w, s.id, 0, 0)
       return
@@ -70,8 +70,8 @@ export class TeamAI {
     const carrier = w.puck.carrierId ? findSkater(w, w.puck.carrierId) : undefined
     if (!carrier) for (const x of this.mem.values()) x.carryTime = 0
     // Cambio por cansancio: automático en cuanto hay alguien tirado y suplente fresco (tope: 3 por equipo).
-    for (const side of [0, 1] as Side[]) trySub(w, side)
-    for (const side of [0, 1] as Side[]) this.updateSide(w, side, humanId, carrier, dt)
+    for (const side of sides) trySub(w, side)
+    for (const side of sides) this.updateSide(w, side, humanId, carrier, dt)
   }
 
   // ------------------------------------------------------------------

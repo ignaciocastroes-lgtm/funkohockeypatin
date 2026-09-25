@@ -3,6 +3,8 @@ import {
   FixedStepper,
   GOALS,
   RINK,
+  SKATER,
+  STAMINA,
   TeamAI,
   assistAim,
   awardPenalty,
@@ -20,12 +22,13 @@ import {
   teammateAtPoint,
 } from "../engine"
 import type { ActionEvent } from "./input"
+import { FLICK_MAX_DIST, FLICK_MIN_DIST } from "./input"
 import { applyShootoutAttempt, initialShootout } from "./shootout"
 import type { ShootoutResult, ShootoutState } from "./shootout"
 export type { ShootoutResult } from "./shootout"
-import type { SkaterKind, Side, Surface, World } from "../engine"
+import type { SkaterKind, PuckKind, Side, Surface, World } from "../engine"
 import { EDGE_CHIP_R, drawHud, drawScene, teammateEdgeChips } from "./draw"
-import { canvasFontFamily } from "./cues"
+import { canvasFontFamily, plateSize } from "./cues"
 import { Confetti, ReplayBuffer, drawFlash, replayFrameAt, replayWorld } from "./effects"
 import type { Flash, GoalReplay } from "./effects"
 import { TouchInput, isShootKey, keyboardVector } from "./input"
@@ -39,6 +42,8 @@ export const NIVEL_SKILL: Record<Nivel, number> = { facil: 0.3, normal: 0.6, dif
 export interface MatchTeam {
   name: string
   color: string
+  /** Color del pantalón, si el equipo tiene uno distinto al de la camiseta. */
+  pantsColor?: string
   crest: string
   kinds: SkaterKind[]
   names: string[]
@@ -49,13 +54,23 @@ export interface MatchOptions {
   teams: [MatchTeam, MatchTeam]
   /** Pista: la del equipo local (localía). */
   surface: Surface
+  /** Peso de la bocha (por defecto "normal") — ver `PUCK_KINDS` en el motor. Pesada = más lenta y
+   *  previsible; liviana = más rápida y rebota más. */
+  puckKind?: PuckKind
   nivel: Nivel
   /** Segundos. */
   duration: number
   leftHanded?: boolean
+  /** Esquema de control: "honda" (por defecto, estirás y soltás como una honda) o "botones"
+   *  (arcade clásico — el dedo maneja como un stick en toda la pantalla, pase y tiro son botones
+   *  aparte con medidor de potencia). */
+  controlScheme?: "honda" | "botones"
   sound?: boolean
   /** Música de fondo (fiesta de las gradas). Por defecto "on". */
   music?: MusicLevel
+  /** Modo ahorro: menos densidad de público y sin las banderitas de la tribuna, para que ande mejor
+   *  en celulares de gama baja. Se puede prender/apagar en vivo con `MatchHandle.setGraphicsSaver`. */
+  graphicsSaver?: boolean
   debug?: boolean
   /** Semilla de la IA (por defecto aleatoria). */
   seed?: number
@@ -92,6 +107,12 @@ export interface MatchResult {
 
 export type ViewMode = "auto" | "full" | "three-quarter"
 
+/** Desde qué fracción de estirón/carga (0..1) un tiro ya califica como supertiro — se deriva de
+ *  `powerFromFlick()` y `STAMINA.superShotMinSpeed`, no es un número fijo: si cualquiera de las dos
+ *  cambia, este umbral se recalcula solo. Se usa para la señal visual (línea/botón que avisan "ya
+ *  es supertiro"), en los dos esquemas de control. */
+const SUPER_PULL_THRESHOLD = (STAMINA.superShotMinSpeed - 9) / (SKATER.kickMaxSpeed - 2 - 9)
+
 export interface MatchHandle {
   destroy(): void
   pause(): void
@@ -103,6 +124,15 @@ export interface MatchHandle {
   startSuddenDeath(seconds: number): void
   /** Botón de un toque: pasa a la siguiente vista de cámara (seguir → cancha completa → 3/4 → seguir). */
   cycleView(): void
+  /** Botón de un toque: pasa el control al siguiente compañero (la selección automática sigue de
+   *  base — esto es para cuando esa elección no es la que se quiere). No hace nada en el demo. */
+  cyclePlayer(): void
+  /** Diestro/zurdo, en vivo, sin reiniciar el partido (desde la pausa) — solo cambia de qué lado de
+   *  la pantalla sale cada rol, el esquema de control en sí (honda/botones) no se puede cambiar así:
+   *  el de botones tiene sus propios botones en el DOM, armados una sola vez al montar el partido. */
+  setLeftHanded(v: boolean): void
+  /** Modo ahorro en vivo (ver `MatchOptions.graphicsSaver`), sin reiniciar el partido. */
+  setGraphicsSaver(v: boolean): void
   readonly viewMode: ViewMode
   readonly paused: boolean
   readonly ended: boolean
@@ -119,6 +149,7 @@ export interface MatchHandle {
 // Familia para el canvas. NO puede ser `var(--font-orbitron)` (el canvas la ignora): se resuelve al montar.
 let FONT = canvasFontFamily(null)
 const sideOf = (id: string): Side => (id[0] === "L" ? 0 : 1)
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 
 export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle {
   FONT = canvasFontFamily(getComputedStyle(container).getPropertyValue("--font-orbitron"))
@@ -131,12 +162,13 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   if (!ctx) throw new Error("Canvas 2D no disponible")
 
   const colors: [string, string] = [o.teams[0].color, o.teams[1].color]
+  const pantsColors: [string | undefined, string | undefined] = [o.teams[0].pantsColor, o.teams[1].pantsColor]
   const names: [string, string] = [o.teams[0].name, o.teams[1].name]
   const crests: [string, string] = [o.teams[0].crest, o.teams[1].crest]
   const world = createWorld({
     surface: o.surface,
+    puckKind: o.puckKind,
     duration: o.duration,
-    teamSize: o.training ? 1 : undefined,
     goalies: o.training ? [o.training.goalie === "local", o.training.goalie === "visita"] : undefined,
     kinds: [o.teams[0].kinds, o.teams[1].kinds],
     names: [o.teams[0].names, o.teams[1].names],
@@ -144,7 +176,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const ai = new TeamAI({ skill: [0.7, NIVEL_SKILL[o.nivel]], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
   const stepper = new FixedStepper()
   const cam = new Camera()
-  const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded })
+  const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded, buttonsMode: o.controlScheme === "botones" })
   const sfx = new Sfx()
   sfx.muted = o.sound === false
   // Público de las gradas (murmullo, ovaciones, reacciones). El entrenamiento es práctica en soledad: sin público.
@@ -198,6 +230,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let cssH = 1
   let dpr = 1
   let paused = false
+  let graphicsSaver = !!o.graphicsSaver
   let ended = false
   let destroyed = false
   let banner: { text: string; until: number } | null = null
@@ -206,6 +239,14 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let lastKick: { id: string } | null = null
   const pending: ActionEvent[] = []
   let receiverLock: { id: string; until: number } | null = null
+  // 0..1 suavizado: qué tanto el marcador (arriba-izquierda) está corrido a la derecha/atenuado
+  // porque la pelota (y el jugador controlado) están tapados por esa esquina. Con inercia (como la
+  // cámara) para que sea un deslizamiento, no un salto — ver `scorePanelShift` más abajo.
+  let scorePanelShift = 0
+  // Mismo criterio, para los botones PASE/TIRO (esquema "botones"): se atenúan (no se mueven —
+  // mover un botón de acción debajo del pulgar sería peor) cuando la pelota o el jugador controlado
+  // están en esa esquina, para no competir visualmente con la jugada que está pasando ahí mismo.
+  let actionButtonsShift = 0
 
   // Vertical: la cancha (horizontal por naturaleza, 40x20 m) se dibuja rotada 90° para llenar la
   // pantalla del teléfono en mano. `portraitNow()` decide en base al tamaño real del contenedor;
@@ -235,71 +276,41 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   // Traduce un punto real de pantalla al espacio virtual horizontal (ver portraitNow arriba).
   const toVirtual = (rx: number, ry: number) => (portraitNow() ? { x: ry, y: cssW - rx } : { x: rx, y: ry })
   const pos = (e: PointerEvent) => { const p = rectPos(e); return toVirtual(p.rx, p.ry) }
+  // Inversa de `toVirtual`: un punto del espacio virtual (donde vive la cámara) a pantalla real
+  // (donde vive el marcador, que siempre se dibuja derecho). Se usa para saber si la pelota quedó
+  // debajo del marcador, sin importar la rotación de portrait.
+  const virtualToScreen = (vx: number, vy: number) => (portraitNow() ? { x: cssW - vy, y: vx } : { x: vx, y: vy })
 
-  // Pellizco con dos dedos = acercar/alejar la cámara (ángulo de vista), en cualquier orientación.
-  // Mientras se pellizca, los roles de movimiento/tiro de esos dedos se sueltan; al soltar uno y
-  // quedar un solo dedo, retoma el control normal desde esa posición.
-  const activePts = new Map<number, { rx: number; ry: number }>()
-  let pinch: { d0: number; z0: number } | null = null
-  const dist2 = () => {
-    const pts = [...activePts.values()]
-    if (pts.length < 2) return null
-    return Math.max(1, Math.hypot(pts[0].rx - pts[1].rx, pts[0].ry - pts[1].ry))
-  }
+  // NO hay pellizco de dos dedos para el zoom, A PROPÓSITO — hubo uno acá y era un bug grave: el
+  // control de honda/botones NECESITA los dos pulgares tocando la pantalla A LA VEZ (uno mueve, el
+  // otro tira), y un pellizco-para-zoom dispara apenas toca el SEGUNDO dedo, sin importar la
+  // intención — cancelaba el joystick del primer dedo y jamás llegaba a registrar el tiro del
+  // segundo. Si algún día se quiere zoom táctil, tiene que convivir con el control de dos dedos
+  // (por ejemplo, solo con un tercer dedo), no disparar con cualquier segundo toque. El botón de
+  // vista (SEG/TOT/3/4) ya cubre "ver más cancha" sin este riesgo.
   const onDown = (e: PointerEvent) => {
     e.preventDefault()
     sfx.unlock()
     if (o.demo) { o.onDemoTap?.(); return } // "attract mode": cualquier toque corta el demo y arranca a jugar
     try { canvas.setPointerCapture(e.pointerId) } catch { /* ok */ }
     if (paused || ended) return
-    activePts.set(e.pointerId, rectPos(e))
-    if (activePts.size >= 2) {
-      if (!pinch) {
-        const d0 = dist2()
-        if (d0) {
-          pinch = { d0, z0: cam.zoom }
-          for (const id of activePts.keys()) input.cancel(id)
-        }
-      }
-      return
-    }
     const p = pos(e)
     input.down(e.pointerId, p.x, p.y, e.timeStamp / 1000)
   }
   const onMove = (e: PointerEvent) => {
     e.preventDefault()
     if (paused || ended) return
-    if (activePts.has(e.pointerId)) activePts.set(e.pointerId, rectPos(e))
-    if (pinch) {
-      const d = dist2()
-      if (d) cam.zoom = pinch.z0 * (pinch.d0 / d)
-      return
-    }
     const p = pos(e)
     input.move(e.pointerId, p.x, p.y, e.timeStamp / 1000)
   }
   const onUp = (e: PointerEvent) => {
     e.preventDefault()
     sfx.unlock()
-    const rp = rectPos(e)
-    activePts.delete(e.pointerId)
-    if (pinch) {
-      if (activePts.size >= 2) return // siguen pellizcando con los dedos que quedan (raro, 3+)
-      pinch = null
-      if (activePts.size === 1 && !paused && !ended) {
-        const [[id, last]] = [...activePts.entries()]
-        const v = toVirtual(last.rx, last.ry)
-        input.down(id, v.x, v.y, e.timeStamp / 1000)
-      }
-      return
-    }
-    const p = toVirtual(rp.rx, rp.ry)
+    const p = pos(e)
     const ev = input.up(e.pointerId, p.x, p.y, e.timeStamp / 1000)
     if (ev && !paused && !ended && !o.demo) pending.push(ev)
   }
   const onCancel = (e: PointerEvent) => {
-    activePts.delete(e.pointerId)
-    if (pinch && activePts.size < 2) pinch = null
     input.cancel(e.pointerId)
   }
   const noMenu = (e: Event) => e.preventDefault()
@@ -308,6 +319,88 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   canvas.addEventListener("pointerup", onUp, { passive: false })
   canvas.addEventListener("pointercancel", onCancel)
   canvas.addEventListener("contextmenu", noMenu)
+
+  // Tamaño de PASE/TIRO en el esquema "botones" — declarado afuera del bloque que arma los
+  // botones porque el cálculo de si tapan la jugada (más abajo, en el loop de cuadro) también lo
+  // necesita.
+  const ACTION_BTN_SIZE = 96
+
+  // ---------- esquema "botones": pase y tiro con medidor de potencia ----------
+  // Sin gesto de arrastre acá: mantener carga potencia (0→1 en 1.1s), soltar dispara con esa
+  // potencia (mínimo 0.15, para que un toque rápido igual haga algo). Van por la misma cola
+  // `pending` que el resto, para quedar sincronizados con el paso fijo de física.
+  // Tamaño y estética "mando de NES": más grandes que antes (74→96px) y con un cuerpo abombado
+  // (degradé + sombra), no un círculo plano — se leen como un botón de verdad, no como un ícono.
+  let actionButtons: HTMLElement | null = null
+  if (o.controlScheme === "botones") {
+    // Aclara (t>0) u oscurece (t<0, hacia negro) un color hex — para el degradé/sombra "abombados"
+    // de los botones NES-style. t en -1..1.
+    const shadeHex = (hex: string, t: number): string => {
+      const n = parseInt(hex.slice(1), 16)
+      const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255
+      const mix = (c: number) => Math.max(0, Math.min(255, Math.round(t >= 0 ? c + (255 - c) * t : c * (1 + t))))
+      return `rgb(${mix(r)},${mix(g)},${mix(b)})`
+    }
+    const CHARGE_MS = 1100
+    const BTN_SIZE = ACTION_BTN_SIZE
+    const mkButton = (label: string, action: "pase" | "tiro", color: string) => {
+      const fill = document.createElement("div")
+      fill.style.cssText = `position:absolute;left:0;right:0;bottom:0;height:0%;background:${color};opacity:.5;pointer-events:none;transition:height 60ms linear;mix-blend-mode:screen`
+      const btn = document.createElement("button")
+      btn.type = "button"
+      btn.setAttribute("aria-label", action === "pase" ? "Pase (mantener carga potencia)" : "Tiro (mantener carga potencia)")
+      btn.style.cssText = `position:relative;overflow:hidden;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
+        `border:4px solid ${shadeHex(color, -0.25)};` +
+        `background:radial-gradient(circle at 34% 28%, ${shadeHex(color, 0.35)}, ${color} 46%, ${shadeHex(color, -0.35)} 100%);` +
+        `box-shadow:0 5px 0 ${shadeHex(color, -0.5)}, 0 7px 10px rgba(0,0,0,.55), inset 0 2px 3px rgba(255,255,255,.45);` +
+        `color:#0a0a0a;text-shadow:0 1px 0 rgba(255,255,255,.35);font:900 15px inherit;letter-spacing:.05em;touch-action:none;-webkit-touch-callout:none;` +
+        `transition:transform 70ms ease,box-shadow 70ms ease`
+      btn.appendChild(fill)
+      const span = document.createElement("span")
+      span.style.cssText = "position:relative;pointer-events:none"
+      span.textContent = label
+      btn.appendChild(span)
+      let startedAt = 0
+      let raf = 0
+      const tick = () => {
+        const p = Math.min(1, (performance.now() - startedAt) / CHARGE_MS)
+        fill.style.height = `${p * 100}%`
+        if (action === "tiro") fill.style.background = p >= SUPER_PULL_THRESHOLD ? "#f97316" : color
+        if (p < 1) raf = requestAnimationFrame(tick)
+      }
+      const start = (e: PointerEvent) => {
+        e.preventDefault()
+        sfx.unlock()
+        fill.style.background = color
+        // "Presionado": se hunde un toque y pierde la sombra de despegue — el feedback táctil de
+        // un botón de verdad, no solo el relleno de carga.
+        btn.style.transform = "scale(0.93) translateY(2px)"
+        btn.style.boxShadow = `0 2px 0 ${shadeHex(color, -0.5)}, 0 3px 5px rgba(0,0,0,.5), inset 0 2px 3px rgba(255,255,255,.3)`
+        startedAt = performance.now()
+        cancelAnimationFrame(raf)
+        raf = requestAnimationFrame(tick)
+      }
+      const release = () => {
+        cancelAnimationFrame(raf)
+        btn.style.transform = ""
+        btn.style.boxShadow = `0 5px 0 ${shadeHex(color, -0.5)}, 0 7px 10px rgba(0,0,0,.55), inset 0 2px 3px rgba(255,255,255,.45)`
+        if (startedAt === 0) return
+        const power = Math.max(0.15, Math.min(1, (performance.now() - startedAt) / CHARGE_MS))
+        startedAt = 0
+        fill.style.height = "0%"
+        if (!paused && !ended && !o.demo) pending.push({ kind: "button", action, power })
+      }
+      btn.addEventListener("pointerdown", start, { passive: false })
+      btn.addEventListener("pointerup", release)
+      btn.addEventListener("pointercancel", release)
+      return btn
+    }
+    actionButtons = document.createElement("div")
+    actionButtons.style.cssText = "position:absolute;right:14px;bottom:14px;display:flex;gap:14px;z-index:5;transition:opacity 150ms linear"
+    actionButtons.appendChild(mkButton("PASE", "pase", "#4ade80"))
+    actionButtons.appendChild(mkButton("TIRO", "tiro", "#facc15"))
+    container.appendChild(actionButtons)
+  }
 
   // ---------- teclado en escritorio: WASD/flechas mueven, Espacio tira/pasa ----------
   // Independiente del mouse: en escritorio ya no hace falta arrastrar para moverse, el
@@ -372,6 +465,27 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       const speed = powerFromFlick(ev.vhPerSec)
       const r = assistAim(world, s.id, ev.angle, speed)
       if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
+    } else if (ev.kind === "button") {
+      if (ev.action === "tiro") {
+        // Mismo camino que un estirón a fondo (o corto, según `power`): dirección = hacia dónde
+        // mira el jugador (no hay gesto de arrastre en este esquema).
+        const speed = powerFromFlick(1.2 + Math.max(0, Math.min(1, ev.power)) * 4.8)
+        const r = assistAim(world, s.id, s.heading, speed)
+        if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
+      } else {
+        // Pase automático al mejor compañero (igual que el toque suelto), pero la potencia del pase
+        // sí responde al medidor: 0.7x-1.3x la velocidad que ya calcula `passSpeedFor` por distancia.
+        const tid = bestPassTarget(world, s.id)
+        const t = tid ? findSkater(world, tid) : undefined
+        if (!t) return
+        const d0 = Math.hypot(t.x - s.x, t.y - s.y)
+        const flight = Math.min(0.8, d0 / 10)
+        const tx = t.x + t.vx * flight
+        const ty = t.y + t.vy * flight
+        const base = passSpeedFor(Math.hypot(tx - s.x, ty - s.y))
+        const speed = base * (0.7 + Math.max(0, Math.min(1, ev.power)) * 0.6)
+        if (kick(world, s.id, Math.atan2(ty - s.y, tx - s.x), speed)) lockReceiver(t.id)
+      }
     } else {
       // Pase de un dedo: si el toque cae sobre un compañero (o su flecha de borde), va a ese; si no,
       // el toque suelto del dedo de acción sigue siendo pase automático al mejor. El toque del dedo de
@@ -402,6 +516,20 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   function lockReceiver(id: string) {
     receiverLock = { id, until: world.time + 2.2 }
     controlledId = id
+  }
+
+  /** Cambio manual de jugador: pasa al siguiente compañero en cancha (orden estable por id), sin
+   *  tocar la selección automática de base — `selectControlled` sigue corriendo cada cuadro, esto
+   *  solo le da un punto de partida distinto (la propia histéresis de 1m lo mantiene mientras la
+   *  pelota no esté bastante más cerca de otro). No reusa `receiverLock` a propósito: ese se suelta
+   *  apenas alguien agarra la pelota (pensado para un pase en el aire), y esto tiene que aguantar
+   *  todo el juego abierto, no solo mientras la pelota vuela. */
+  function cyclePlayer() {
+    if (o.demo) return
+    const onIce = world.skaters.filter((s) => s.side === 0).sort((a, b) => a.id.localeCompare(b.id))
+    if (onIce.length === 0) return
+    const idx = onIce.findIndex((s) => s.id === controlledId)
+    controlledId = onIce[(idx + 1) % onIce.length].id
   }
 
   function countEvent(ev: ReturnType<typeof drainEvents>[number]) {
@@ -451,7 +579,8 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       alpha = stepper.advance(dt, (fixed) => {
         if (receiverLock && (world.puck.carrierId !== null || world.time > receiverLock.until || world.phase !== "play" || !findSkater(world, receiverLock.id))) receiverLock = null
         controlledId = o.demo ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
-        if (!o.training) ai.update(world, controlledId, fixed)
+        if (o.training) ai.update(world, controlledId, fixed, [0]) // en entrenamiento, solo los compañeros (lado 0) se mueven solos — no hay rival de verdad
+        else ai.update(world, controlledId, fixed)
         if (controlledId) {
           const kb = keyboardVector(pressedKeys)
           const useKb = kb.x !== 0 || kb.y !== 0
@@ -498,6 +627,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
               releaseFingers()
               result.score = [world.score[0], world.score[1]]
               result.fouls = [world.fouls[0], world.fouls[1]]
+              // Festejo de partido ganado: un estallido de confeti más grande, desde el medio de la
+              // pantalla — aparte del que ya tira cada gol individual.
+              if (!o.demo && !o.training && world.score[0] > world.score[1]) {
+                confetti.spawn(cssW / 2, cssH * 0.35, [colors[0], "#ffd23f", "#ffffff", "#4ade80"], 220)
+              }
               o.onEnd?.({ ...result })
             }
           }
@@ -555,7 +689,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     } else if (goalReplay) {
       goalReplay = null
     }
-    const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement }
+    const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver }
 
     // Cancha, joystick y línea de apuntado: viven en el espacio "virtual" horizontal y se rotan 90°
     // en vertical (junto con el toque, que se traduce al mismo espacio — ver toVirtual arriba).
@@ -573,7 +707,39 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       drawFlash(ctx, flash, now, cssW, cssH)
       if (now - flash.startedAt > flash.durationMs) flash = null
     }
-    drawHud(ctx, world, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo }, cssW, cssH)
+    // ¿La pelota (o el jugador que controlo) quedó bajo el marcador? Si sí, lo corremos a la
+    // derecha y lo atenuamos (con inercia, para que sea un deslizamiento suave). `plateSize` es la
+    // misma función que usa `drawHud` para el tamaño de la placa, así el rectángulo coincide.
+    {
+      const { boxW, boxH } = plateSize(cssW, cssH)
+      const plateR = boxW + 26 // margen: que empiece a correrse un poco antes de que la tape del todo
+      const plateB = boxH + 34
+      const underPlate = (vx: number, vy: number) => {
+        const p = virtualToScreen(vx, vy)
+        return p.x <= plateR && p.y <= plateB
+      }
+      const puckScreen = cam.toScreen(lerp(world.puck.px, world.puck.x, alpha), lerp(world.puck.py, world.puck.y, alpha))
+      const ctrl = controlledId ? world.skaters.find((sk) => sk.id === controlledId) : undefined
+      const ctrlScreen = ctrl ? cam.toScreen(lerp(ctrl.px, ctrl.x, alpha), lerp(ctrl.py, ctrl.y, alpha)) : null
+      const target = underPlate(puckScreen.x, puckScreen.y) || (ctrlScreen && underPlate(ctrlScreen.x, ctrlScreen.y)) ? 1 : 0
+      const k = 1 - Math.exp(-6 * dt)
+      scorePanelShift += (target - scorePanelShift) * k
+
+      if (actionButtons) {
+        // Zona real (pantalla, sin rotar) que ocupan PASE/TIRO: ver el `right:14px;bottom:14px` con
+        // el que se arman más abajo.
+        const btnL = cssW - 14 - ACTION_BTN_SIZE * 2 - 14
+        const btnT = cssH - 14 - ACTION_BTN_SIZE
+        const underButtons = (vx: number, vy: number) => {
+          const p = virtualToScreen(vx, vy)
+          return p.x >= btnL - 20 && p.y >= btnT - 20
+        }
+        const bTarget = underButtons(puckScreen.x, puckScreen.y) || (ctrlScreen && underButtons(ctrlScreen.x, ctrlScreen.y)) ? 1 : 0
+        actionButtonsShift += (bTarget - actionButtonsShift) * k
+        actionButtons.style.opacity = String(1 - 0.62 * actionButtonsShift)
+      }
+    }
+    drawHud(ctx, world, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo, scorePanelShift }, cssW, cssH)
     if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
     if (o.debug) drawDebug(ctx, fpsSmooth, stepsThisFrame, world)
   }
@@ -604,6 +770,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       viewMode = viewMode === "auto" ? "full" : viewMode === "full" ? "three-quarter" : "auto"
       if (viewMode === "auto") cam.reset()
     },
+    cyclePlayer,
+    setLeftHanded(v: boolean) { input.leftHanded = v },
+    setGraphicsSaver(v: boolean) { graphicsSaver = v },
     get viewMode() { return viewMode },
     destroy() {
       destroyed = true
@@ -622,6 +791,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       crowd?.stop()
       sfx.close()
       canvas.remove()
+      actionButtons?.remove()
     },
   }
 }
@@ -643,14 +813,34 @@ function drawTouchOverlay(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   const aim = input.aim
   const carrier = w.puck.carrierId ? findSkater(w, w.puck.carrierId) : undefined
   if (aim && carrier && carrier.side === 0 && controlledId === carrier.id) {
-    const dx = aim.cx - aim.sx
-    const dy = aim.cy - aim.sy
+    const dx = aim.sx - aim.cx // al revés que el estirón: la honda tira para el lado contrario
+    const dy = aim.sy - aim.cy
     if (Math.hypot(dx, dy) > 10) {
-      const r = assistAim(w, carrier.id, Math.atan2(dy, dx), 14)
+      // Las dos líneas (banda y tiro) parten del MISMO origen: la posición actual del jugador en
+      // pantalla — no de dónde tocaste al principio. Si el jugador se mueve (o la cámara lo sigue)
+      // mientras estirás, dibujar la banda desde el punto de toque fijo hacía que las dos líneas se
+      // vieran desfasadas entre sí (bug real, encontrado con una captura). El LARGO y la DIRECCIÓN
+      // del estirón siguen siendo los mismos (vienen del dedo), solo cambia desde dónde se dibujan.
       const from = cam.toScreen(carrier.x, carrier.y)
+      // la "banda" de la honda: mismo largo/dirección que estiraste, ahora anclada al jugador — para
+      // que se entienda el gesto de un vistazo (Angry Birds), aparte de la línea de tiro de más abajo
+      ctx.strokeStyle = "rgba(255,255,255,0.4)"
+      ctx.lineWidth = 3
+      ctx.setLineDash([5, 5])
+      ctx.beginPath()
+      ctx.moveTo(from.x, from.y)
+      ctx.lineTo(from.x - dx, from.y - dy)
+      ctx.stroke()
+      const r = assistAim(w, carrier.id, Math.atan2(dy, dx), 14)
       const len = 9 * cam.ppm
-      ctx.strokeStyle = r.target === "teammate" ? "#4ade80" : r.target === "goal" ? "#fde047" : "rgba(255,255,255,0.85)"
-      ctx.lineWidth = 4
+      // Supertiro: si el estirón ya alcanza (misma cuenta que hace input.ts para la potencia), la
+      // línea de tiro se pone naranja — así se ve DURANTE el estirón que ya se llegó, no solo se
+      // sabe después de soltar.
+      const hgt = Math.max(1, cam.vh)
+      const pullFrac = (Math.hypot(dx, dy) - FLICK_MIN_DIST * hgt) / ((FLICK_MAX_DIST - FLICK_MIN_DIST) * hgt)
+      const isSuper = pullFrac >= SUPER_PULL_THRESHOLD
+      ctx.strokeStyle = isSuper ? "#f97316" : r.target === "teammate" ? "#4ade80" : r.target === "goal" ? "#fde047" : "rgba(255,255,255,0.85)"
+      ctx.lineWidth = isSuper ? 6 : 4
       ctx.lineCap = "round"
       ctx.setLineDash([2, 10])
       ctx.beginPath()

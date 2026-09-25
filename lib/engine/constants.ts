@@ -3,7 +3,7 @@
  * TODO está en METROS, SEGUNDOS y radianes. Nada depende de píxeles ni de frames.
  * Estos valores son el "panel de ajuste" del feeling: se tocan aquí y en ningún otro lado.
  */
-import type { Surface, SkaterKind } from "./types"
+import type { Surface, SkaterKind, PuckKind } from "./types"
 
 /** Paso fijo de simulación. Independiente de los Hz de la pantalla. */
 export const FIXED_DT = 1 / 120
@@ -40,6 +40,27 @@ export const PUCK = {
   /** Cuánto se avanza como máximo por sub-paso (m). Garantiza que no atraviese postes ni líneas. */
   maxSubstep: 0.07,
 } as const
+
+/**
+ * Tres bochas de distinto peso — un solo eje que sirve para dos cosas: variedad en partido normal
+ * ("cambia el feeling") y una progresión de dificultad lista para el entrenamiento (pesada = más
+ * lenta y predecible para arrancar; liviana = rápida y con más rebote, para el que ya sabe jugar).
+ * Multiplican los valores de `PUCK`/`SURFACES` en vez de duplicarlos — así ninguna cancha ni
+ * ninguna bocha se queda desactualizada si se retocan los números base.
+ */
+export const PUCK_KINDS: Record<PuckKind, {
+  /** Multiplica la velocidad máxima libre (`PUCK.maxSpeed`) y el tope de un tiro (`SKATER.kickMaxSpeed`). */
+  maxSpeedMul: number
+  /** Multiplica el frenado por fricción de la superficie (`puckDecel`/`puckDrag`). */
+  decelMul: number
+  /** Multiplica TODAS las restituciones (vallas, postes, arquero, jugadores) — tope 0.95: ni la más
+   *  liviana se convierte en una pelota de goma que no pierde energía nunca. */
+  restitutionMul: number
+} > = {
+  pesada: { maxSpeedMul: 0.78, decelMul: 1.35, restitutionMul: 0.55 },
+  normal: { maxSpeedMul: 1.0, decelMul: 1.0, restitutionMul: 1.0 },
+  liviana: { maxSpeedMul: 1.22, decelMul: 0.75, restitutionMul: 1.35 },
+}
 
 /**
  * Trayectoria semi-curva: un tiro tomado moviéndose de costado le pone un poco de efecto, como un
@@ -98,6 +119,10 @@ export const SKATER = {
   stickTurnRate: 12,
   /** Distancia palo-puck medida desde el borde del jugador (m). */
   stickReach: 0.18,
+  /** Cuánto se corre la pelota a un costado del cuerpo al patear (m) — no sale del centro, como en
+   *  hockey de verdad (el palo gira para pegarle). El lado (derecha/izquierda) lo decide el ángulo
+   *  del tiro contra hacia dónde mira el jugador, en `kick()`. */
+  shotSideOffset: 0.08,
   /** Alcance extra para recoger un puck suelto (m). */
   pickupReach: 0.35,
   /** Alcance extra para robar un puck llevado (m). */
@@ -148,6 +173,16 @@ export const GOALIE = {
   advanceRange: 9,
   /** Velocidad (m/s) con la que el portero avanza/retrocede en su eje de profundidad. */
   advanceSpeed: 3.2,
+  /** Por naturaleza, un arquero no deja que la bocha rebote "a lo que caiga" contra el cuerpo: la
+   *  saca de encima con el palo, hacia el costado — nunca al medio, que sería regalarla de nuevo.
+   *  Empuje extra (m/s) que se suma al rebote elástico normal en cada atajada. */
+  clearSpeed: 5.5,
+  /** Si la bocha cambia de dirección de golpe estando ya "entrando" (un desvío en un poste o un
+   *  patinador) el arquero, que ya estaba alerta, tarda esto en volver a girar hacia la nueva
+   *  trayectoria — más corto que `reactionDelay` (no arranca de cero: ya estaba mirando para ahí). */
+  deflectionDelay: 0.09,
+  /** Cuánto tiene que cambiar el ángulo de vuelo (rad) para contar como un desvío real y no ruido. */
+  deflectionAngle: 0.45,
 } as const
 
 /**

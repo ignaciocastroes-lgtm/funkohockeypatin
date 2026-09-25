@@ -1,0 +1,149 @@
+DEUDA TÉCNICA — SEGUNDO JUGADOR EN OTRO CELULAR (Android/iPhone)
+==================================================================
+Estado: DISEÑADO, NO IMPLEMENTADO. Nada de este documento tiene código todavía.
+Origen: charla de auditoría, Ronda 40+. Se deja como referencia para retomar.
+
+
+1. POR QUÉ HACE FALTA
+----------------------
+Hoy el juego es un solo humano (lado 0) contra la IA (lado 1), siempre. Para el género arcade
+deportivo (NHL Arcade, Sensible Soccer, Rocket League en su núcleo), el 1v1 entre dos personas es
+la mitad del atractivo. Es, con diferencia, la mejora de mayor impacto pendiente del proyecto.
+
+
+2. LA RESTRICCIÓN QUE MANDA: NADA DE BLUETOOTH/NFC DIRECTO
+------------------------------------------------------------
+Esto es una app web (PWA), no dos apps nativas. Safari en iPhone NUNCA implementó Web Bluetooth ni
+Web NFC (decisión de Apple, no algo que se pueda evitar del lado del juego). Como el objetivo es
+que ande igual entre un Android y un iPhone, cualquier camino de "los dos celulares se hablan
+directo por radio corta" queda descartado apenas uno de los dos es iPhone.
+
+La única vía que funciona igual en los dos: INTERNET (aunque sea la misma red WiFi de una casa,
+técnicamente viaja por IP, no por radio corta entre los dos aparatos).
+
+
+3. DOS ARQUITECTURAS POSIBLES
+-------------------------------
+
+A) WebRTC (peer-to-peer de verdad)
+   - Los celulares terminan hablándose directo, latencia muy baja.
+   - Igual necesita un SERVIDOR DE SEÑALIZACIÓN para el apretón de manos inicial (SDP/ICE) — no
+     hay forma de evitar esa parte, es del protocolo, no una limitación de esta implementación.
+   - En datos móviles, muchas redes tienen NAT simétrico y bloquean la conexión directa: hace
+     falta un servidor TURN de respaldo (más infraestructura, más para mantener/pagar).
+   - Más complejo de depurar (fallas de conexión intermitentes, distintas según operador/red).
+
+B) Relay por WebSocket + física autoritativa en un solo lado   <-- RECOMENDADA PARA EMPEZAR
+   - Los dos celulares se conectan a un servidor chico (Cloudflare Durable Objects, PartyKit,
+     Supabase Realtime, o un Node/Bun con capa gratis) que solo reenvía mensajes cortos.
+   - UN SOLO LADO corre la simulación real (`stepWorld`); el otro solo manda sus toques y recibe
+     el resultado. Evita el problema de determinismo cruzado (ver sección 4).
+   - Más lento que WebRTC por el salto extra por el servidor, pero para un partido casual esa
+     diferencia (uno o dos cuadros) no se nota.
+   - Funciona igual en cualquier red, sin pelearse con NAT — mucho menos para depurar.
+
+   Decisión: arrancar por B. Si algún día la latencia molesta de verdad, migrar a WebRTC dejando
+   el mismo protocolo de mensajes (sección 5) — no hay que rediseñar todo, solo el transporte.
+
+
+4. UN HALLAZGO A FAVOR (Y POR QUÉ NO ALCANZA PARA IR DIRECTO A LOCKSTEP)
+---------------------------------------------------------------------------
+Se revisó `lib/engine` completo buscando no-determinismo: NINGÚN archivo usa `Math.random()`
+suelto ni `performance.now()`/`Date.now()` adentro de la física. Todo `stepWorld` es una función
+pura de (estado, dt fijo, input); hasta la IA usa un generador con semilla explícita
+(`mulberry32`). Esto en teoría habilita LOCKSTEP: los dos celulares simulan el mismo mundo en
+paralelo, y por red solo viajan los toques/gestos (`ActionEvent`), no las posiciones — mucho más
+liviano que mandar el mundo entero cada cuadro.
+
+Por qué NO se recomienda arrancar por ahí: JavaScript no garantiza resultados bit-a-bit idénticos
+de `Math.sin/cos/atan2`/`Math.sqrt` entre motores distintos (V8 en Android Chrome vs.
+JavaScriptCore en iOS Safari) — el spec de ECMAScript permite implementaciones "correctamente
+redondeadas dentro de un margen", no bit-exactas. Con miles de pasos físicos por partido
+(FIXED_DT = 1/120s), las dos simulaciones se podrían ir separando de a poco sin ningún error
+visible en el camino — el peor tipo de bug: silencioso y difícil de reproducir. Con la opción B
+(un solo lado calcula) ese riesgo desaparece entero: solo UN motor hace la física, siempre el
+mismo, sin importar en qué teléfono corra.
+
+Si en el futuro se quiere lockstep de verdad (para bajar más la latencia percibida), hay que sumar
+antes: buffer de input con delay fijo (2-4 cuadros) para esconder la latencia de red, detección de
+divergencia (hash del estado cada N pasos, comparado entre los dos lados) y una forma de
+resincronizar si diverge. Es var de trabajo real, no una bandera para prender.
+
+
+5. PROTOCOLO DE MENSAJES (propuesta, sin implementar)
+--------------------------------------------------------
+Reusa el tipo `ActionEvent` que ya existe en `lib/game/input.ts` — no hace falta inventar un
+formato nuevo para las acciones de juego, solo transportarlo.
+
+Mensajes cliente -> relay -> otro cliente:
+
+  { kind: "join",  code: string }                          // unirse a una sala por código
+  { kind: "hello", side: 0 | 1, options: MatchOptions }     // el dueño de la sala manda cómo se
+                                                              // arma el partido (equipos, bocha,
+                                                              // penales o partido normal, nivel)
+  { kind: "input", side: 0 | 1, tick: number, ev: ActionEvent }  // un toque/gesto, con el número
+                                                                    // de paso físico al que aplica
+  { kind: "move",  side: 0 | 1, tick: number, x: number, y: number }  // vector de movimiento
+                                                                        // continuo (joystick), no
+                                                                        // solo acciones puntuales
+  { kind: "snapshot", tick: number, world: <World serializado> }  // SOLO la mandaría el lado que
+                                                                     // simula, cada N pasos, para
+                                                                     // que el otro lado corrija
+                                                                     // cualquier desvío de su
+                                                                     // predicción local
+  { kind: "left" }                                          // alguien se desconectó
+
+Quién simula: el que crea la sala (arbitrario, podría ser "quien tenga mejor conexión" medido con
+un ping al conectarse). El otro lado puede hacer predicción local liviana (mover su propio jugador
+al toque, sin esperar confirmación) y corregirse con los `snapshot` — así no se siente "trabado"
+aunque no sea quien manda.
+
+
+6. UX DE EMPAREJAMIENTO
+--------------------------
+Sin Bluetooth, el patrón natural es el de sala con código (estilo Jackbox):
+  - "Crear partido" -> arma un código corto (4-6 caracteres) o un QR -> lo comparte.
+  - "Unirse" -> escribe el código o escanea el QR -> se conecta a la misma sala en el relay.
+Funciona igual en Android y iPhone porque todo pasa por el navegador, sin nada a nivel sistema
+operativo.
+
+
+7. QUÉ HABRÍA QUE TOCAR EN EL CÓDIGO EXISTENTE
+--------------------------------------------------
+- `lib/game/match.ts`:
+  - `applyAction()` hoy solo deja tirar/pasar al lado 0 (`s.side === 0`, hardcodeado). Para el
+    lado 1 humano remoto, sus `ActionEvent` (llegados por red) tendrían que poder aplicarse
+    también al lado 1 — mismo tipo de dato, otra fuente.
+  - La llamada a `ai.update(...)` ya sabe restringirse a un solo lado (ver el `training` de
+    entrenamiento: `ai.update(world, controlledId, fixed, [0])`). Para 2 jugadores sería apagar la
+    IA de LOS DOS lados, no solo uno.
+  - Falta decidir la cámara del lado 1: ¿se espeja la cancha (cada uno la ve "atacando a la
+    derecha"), o los dos ven la misma orientación? Afecta a `Camera`/`toScreen` y a cómo se
+    traduce el toque (`toVirtual`) para ese lado.
+- Nuevo `lib/net/` (no existe todavía): cliente WebSocket, el protocolo de la sección 5, manejo de
+  reconexión/latencia.
+- Nueva UI en `lib/app/app.ts`: pantalla de sala (crear/unirse, código o QR, esperando rival).
+- `MatchOptions` en `match.ts` ya soporta bocha distinta (`puckKind`) y tanda de penales
+  (`shootout`) — para 2 jugadores alcanza con que los dos arranquen con las MISMAS opciones (las
+  elige quien crea la sala), no hace falta ningún cambio ahí.
+
+
+8. LO QUE NO SE PUDO VALIDAR EN ESTE ENTORNO
+------------------------------------------------
+El contenedor donde se audita este proyecto no tiene red saliente (no se puede levantar ni probar
+un servidor de relay real, ni medir latencia real entre un Android y un iPhone). Todo lo de este
+documento es diseño sobre el papel, no código probado. Antes de darlo por bueno: levantar el relay
+elegido, probarlo con dos teléfonos de verdad, y medir si la latencia percibida molesta antes de
+invertir en WebRTC/lockstep.
+
+
+9. SI SE RETOMA, ORDEN SUGERIDO
+------------------------------------
+1. Relay WebSocket más simple posible (eco de mensajes por sala, sin lógica de juego).
+2. `lib/net/` cliente + protocolo de la sección 5, con UN transporte mockeado (mismo proceso, sin
+   red) para poder testear la lógica de sala sin depender de infraestructura real.
+3. Apagar la IA de los dos lados cuando hay sala activa; `applyAction` acepta eventos de ambos
+   lados.
+4. UI de sala (crear/unirse).
+5. Conectar al relay de verdad, probar con dos dispositivos.
+6. Recién ahí evaluar si hace falta WebRTC/lockstep, con datos reales de latencia en la mano.

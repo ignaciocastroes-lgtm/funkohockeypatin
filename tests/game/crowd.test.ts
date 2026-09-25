@@ -183,7 +183,7 @@ test("audioUrl: sin incrustados va a /audio/; con incrustados (juego.html) usa e
 
 const AUDIO_DIR = resolve(__dirname, "../../../public/audio")
 
-test("assets: existen los 6 audios declarados, son MP3 válidos y pesan poco", () => {
+test("assets: existen los 9 audios declarados, son MP3 válidos y pesan lo esperado", () => {
   let total = 0
   for (const f of Object.values(CROWD_FILES)) {
     const p = resolve(AUDIO_DIR, f)
@@ -192,9 +192,14 @@ test("assets: existen los 6 audios declarados, son MP3 válidos y pesan poco", (
     total += buf.length
     const sync = buf.subarray(0, 3).toString("latin1") === "ID3" || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)
     assert.ok(sync, `${f} no parece un MP3`)
-    assert.ok(buf.length > 5_000 && buf.length < 200_000, `${f}: ${buf.length} bytes`)
+    // crowd-fiesta (música de fondo real) y crowd-band (batucada real: bombo, redoblante — la
+    // "banda de la galería" que faltaba) son las dos capas largas de verdad, no efectos cortos: un
+    // loop de pocos segundos se siente repetitivo de mala manera (Ignacio lo probó y lo pidió de
+    // vuelta más largo), así que tienen su propio tope, bastante más alto.
+    const cap = f === "crowd-fiesta.mp3" || f === "crowd-band.mp3" ? 750_000 : 200_000
+    assert.ok(buf.length > 5_000 && buf.length < cap, `${f}: ${buf.length} bytes`)
   }
-  assert.ok(total < 700_000, `los audios suman ${total} bytes (tope 700 KB)`)
+  assert.ok(total < 2_200_000, `los audios suman ${total} bytes (tope 2.2 MB, la mayor parte es música/banda de fondo)`)
 })
 
 test("assets: no hay archivos de más en public/audio, ni los ORIGINALES de las grabaciones (licencia)", () => {

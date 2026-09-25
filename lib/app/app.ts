@@ -12,7 +12,7 @@ import {
 import type { Category, Team, TeamDraft } from "./teams"
 import { newCup, nextMatch, recordResult } from "./cup"
 import type { Cup, MatchSlot } from "./cup"
-import type { SkaterKind, Surface } from "../engine"
+import type { SkaterKind, PuckKind, Surface } from "../engine"
 
 /**
  * Aplicación completa (menú, equipos, partido) SIN framework: un solo módulo que se monta en un <div>.
@@ -63,9 +63,26 @@ const NIVELES: Array<{ value: Nivel; label: string }> = [
 const NIVEL_LABEL: Record<Nivel, string> = { facil: "Fácil", normal: "Normal", dificil: "Difícil" }
 const SWATCHES = ["#10b981", "#a855f7", "#f472b6", "#22c55e", "#f97316", "#14b8a6", "#e11d48", "#94a3b8"]
 
+/** Tres bochas de distinto peso (ver `PUCK_KINDS` en el motor): además de variedad en partido
+ *  normal, es el mismo eje que usa el entrenamiento para la progresión Básico/Medio/Experto. */
+const PUCK_KIND_OPTIONS: Array<{ value: PuckKind; label: string }> = [
+  { value: "pesada", label: "Pesada" },
+  { value: "normal", label: "Normal" },
+  { value: "liviana", label: "Liviana" },
+]
+const PUCK_KIND_HINT: Record<PuckKind, string> = {
+  pesada: "Más lenta y previsible: frena rápido y casi no rebota. Buena para arrancar.",
+  normal: "El equilibrio de siempre — sin cambios.",
+  liviana: "Más rápida y rebota más: exige más precisión y reflejos.",
+}
+
 const fmtDur = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`
 
-const BOLT = `<svg viewBox="0 0 24 24" width="34" height="34" fill="currentColor" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>`
+/** El ícono real de la PWA (`public/icon.svg`), sin el fondo cuadrado — el círculo de `.fp-bolt` ya
+ *  pone su propio fondo. Es el mismo arco+red+rayo que ve cualquiera que instale la app. */
+/** La insignia real del juego (arte de Ignacio) — 160x160, comprimida e incrustada en base64
+ *  para que funcione igual en el build de Next como en el juego.html de un solo archivo. */
+const GAME_ICON = "data:image/jpeg;base64,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"
 
 export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   const storage = opts.storage === undefined ? undefined : opts.storage
@@ -159,15 +176,9 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const local = teamById(saved.settings.localId)
     const visit = teamById(saved.settings.visitId)
     const s = saved.settings
-    const bolt = h("div", { class: "fp-bolt", "aria-hidden": "true" })
-    bolt.innerHTML = BOLT
     return h("main", { class: "fp-screen fp-menu" },
       ...corners(),
-      h("div", { class: "fp-brand" },
-        bolt,
-        h("h1", { class: "fp-h1 fp-arcade" }, "Liga Funko-Patín"),
-        h("div", { class: "fp-sub fp-arcade" }, h("i"), "ARCADE", h("i")),
-      ),
+      logoBrand(),
       h("div", { class: "fp-actions" },
         h("button", { class: "fp-btn solid", "data-key": "play", onclick: () => startMatch() }, "Jugar partido"),
         h("p", { class: "fp-summary" }, `${local.name} vs ${visit.name} · ${fmtDur(opts.durationOverride ?? s.duration)} · ${NIVEL_LABEL[s.nivel]}`),
@@ -186,18 +197,10 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     )
   }
 
-  function topBar(title: string, color: string, back: () => void, onTitleHold?: () => void): HTMLElement {
-    let holdTimer = 0
-    const startHold = () => { if (onTitleHold) holdTimer = window.setTimeout(onTitleHold, 6000) }
-    const cancelHold = () => window.clearTimeout(holdTimer)
+  function topBar(title: string, color: string, back: () => void): HTMLElement {
     return h("div", { class: "fp-top" },
       h("button", { class: "fp-btn fp-back", "data-key": "back", "aria-label": "Volver", onclick: back }, "‹ Volver"),
-      h("h2", {
-        class: "fp-h2 fp-arcade", style: `color:${color}`,
-        ...(onTitleHold ? {
-          onpointerdown: startHold, onpointerup: cancelHold, onpointerleave: cancelHold, onpointercancel: cancelHold,
-        } : {}),
-      }, title),
+      h("h2", { class: "fp-h2 fp-arcade", style: `color:${color}` }, title),
       h("span", { style: "width:78px", "aria-hidden": "true" }),
     )
   }
@@ -248,7 +251,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const teams = allTeams(saved)
     const local = teamById(s.localId)
     return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
-      topBar("PARTIDO", "#22d3ee", () => go("menu"), () => unlockTraining()),
+      topBar("PARTIDO", "#22d3ee", () => go("menu")),
       h("div", { class: "fp-two" },
         h("section", { class: "fp-panel" }, h("h3", {}, "Tu equipo (local)"),
           h("div", { class: "fp-grid", role: "radiogroup", "aria-label": "Equipo local" }, ...teams.map((t) => teamChip(t, "local")))),
@@ -259,8 +262,14 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         segmented<Nivel>("Nivel del rival", "nivel", NIVELES, s.nivel, (v) => { s.nivel = v; persist(); render() }),
         segmented<number>("Duración", "dur", DURATIONS.map((d) => ({ value: d, label: fmtDur(d) })), s.duration, (v) => { s.duration = v; persist(); render() }),
         segmented<string>("Dedos", "hand", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => { s.leftHanded = v === "l"; persist(); render() }),
+        segmented<"honda" | "botones">("Control", "control-scheme", [
+          { value: "honda", label: "Honda (estirar y soltar)" },
+          { value: "botones", label: "Botones (stick + pase/tiro)" },
+        ], s.controlScheme, (v) => { s.controlScheme = v; persist(); render() }),
         segmented<string>("Sonido", "snd", [{ value: "on", label: "Con sonido" }, { value: "off", label: "Silencio" }], s.sound ? "on" : "off", (v) => { s.sound = v === "on"; persist(); render() }),
         segmented<Settings["music"]>("Música de fondo", "music", [{ value: "on", label: "Prendida" }, { value: "low", label: "Atenuada" }, { value: "off", label: "Apagada" }], s.music, (v) => { s.music = v; persist(); render() }),
+        segmented<PuckKind>("Bocha", "puck-kind", PUCK_KIND_OPTIONS, s.puckKind, (v) => { s.puckKind = v; persist(); render() }),
+        h("p", { class: "fp-note" }, PUCK_KIND_HINT[s.puckKind]),
         h("p", { class: "fp-note" }, `Se juega en la pista del local: ${SURFACE_LABEL[local.surface].toLowerCase()} (${SURFACE_HINT[local.surface].toLowerCase()}).`),
       ),
       h("div", { class: "fp-sticky" },
@@ -423,8 +432,49 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     saved.settings.trainingUnlocked = true
     persist()
     render()
-    showDialog("¡MODO ENTRENAMIENTO DESBLOQUEADO!", "Ya está disponible desde el menú principal.", [{ label: "Genial", primary: true }])
+    showDialog("¡MODO ENTRENAMIENTO DESBLOQUEADO!", "Entrenamiento y práctica de penales, ya están en el menú principal.", [{ label: "Genial", primary: true }])
   }
+
+  // ---------- atajo secreto por toques en el logo (como el modo desarrollador de Android) ----------
+  // Reemplaza al de mantener apretado: ese dependía de un gesto sostenido de varios segundos, con
+  // demasiados puntos donde el sistema podía interferir (ver la nota vieja en el README). Tocar
+  // rápido varias veces es un gesto mucho más chico y mucho más difícil de que el sistema confunda.
+  const LOGO_TAPS_NEEDED = 7
+  const LOGO_TAP_WINDOW = 1500
+  let logoTaps = 0
+  let logoLastTapAt = 0
+  let logoHintTimer = 0
+
+  function logoBrand(): HTMLElement {
+    const bolt = h("div", { class: "fp-bolt" })
+    bolt.appendChild(h("img", { src: GAME_ICON, alt: "", "aria-hidden": "true", draggable: "false" }))
+    const hint = h("div", { class: "fp-tap-hint" })
+    if (!saved.settings.trainingUnlocked) {
+      bolt.addEventListener("click", () => {
+        const now = performance.now()
+        if (now - logoLastTapAt > LOGO_TAP_WINDOW) logoTaps = 0
+        logoLastTapAt = now
+        logoTaps++
+        if (logoTaps >= LOGO_TAPS_NEEDED) {
+          logoTaps = 0
+          hint.textContent = ""
+          unlockTraining()
+          return
+        }
+        const left = LOGO_TAPS_NEEDED - logoTaps
+        if (logoTaps >= 3) hint.textContent = left === 1 ? "¡un toque más!" : `${left} toques más...`
+        window.clearTimeout(logoHintTimer)
+        logoHintTimer = window.setTimeout(() => { hint.textContent = ""; logoTaps = 0 }, LOGO_TAP_WINDOW)
+      })
+    }
+    return h("div", { class: "fp-brand" },
+      bolt,
+      h("h1", { class: "fp-h1 fp-arcade" }, "Liga Funko-Patín"),
+      h("div", { class: "fp-sub fp-arcade" }, h("i"), "ARCADE", h("i")),
+      hint,
+    )
+  }
+
   let inertTargets: Element[] = []
   /** Abre un diálogo modal: todo lo demás del contenedor queda inerte (sin foco de teclado ni toques). */
   function openModal(host: HTMLElement, overlay: HTMLElement) {
@@ -443,20 +493,23 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   // ---------- partido ----------
-  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "nivel" | "duration" | "leftHanded" | "sound" | "music" | "debug"> {
+  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "puckKind" | "nivel" | "duration" | "leftHanded" | "controlScheme" | "sound" | "music" | "graphicsSaver" | "debug"> {
     const s = saved.settings
     const local = teamById(localId)
     const visit = teamById(visitId)
     const [lc, vc] = distinctColors(local.color, visit.color)
-    const mk = (t: Team, color: string) => ({ name: t.name, color, crest: t.crest, kinds: t.roster.map((p) => p.kind), names: t.roster.map((p) => p.name) })
+    const mk = (t: Team, color: string) => ({ name: t.name, color, pantsColor: t.pantsColor, crest: t.crest, kinds: t.roster.map((p) => p.kind), names: t.roster.map((p) => p.name) })
     return {
       teams: [mk(local, lc), mk(visit, vc)],
       surface: local.surface,
+      puckKind: s.puckKind,
       nivel: s.nivel,
       duration: opts.durationOverride ?? s.duration,
       leftHanded: s.leftHanded,
+      controlScheme: s.controlScheme,
       sound: s.sound,
       music: s.music,
+      graphicsSaver: s.graphicsSaver,
       debug: opts.debug,
     }
   }
@@ -482,6 +535,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const MUSIC_NEXT: Record<Settings["music"], Settings["music"]> = { on: "low", low: "off", off: "on" }
     return h("div", { class: "fp-hud" },
       h("button", { class: "fp-btn", "aria-label": "Pausa", "data-key": "pause", onclick: () => showPause(wrap) }, "❚❚"),
+      h("button", { class: "fp-btn", "aria-label": "Cambiar de jugador", "data-key": "cycle-player", onclick: () => m.cyclePlayer() }, "🔄"),
       h("button", { class: "fp-btn view", "aria-label": `Vista: ${viewName(m.viewMode)} — tocá para cambiar`, "data-key": "view",
         onclick: (e: Event) => {
           m.cycleView()
@@ -567,7 +621,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   let demoPlaying = false
   let demoFromBoot = false
   /** Config del entrenamiento en curso (para "reiniciar" desde la pausa), si hay uno. */
-  let trainingPlaying: { goalie: "local" | "visita" | "ninguno"; penalties?: boolean } | null = null
+  let trainingPlaying: { goalie: "local" | "visita" | "ninguno"; penalties?: boolean; puckKind?: PuckKind } | null = null
   function startDemo(fromBoot = false) {
     stopMatch()
     demoPlaying = true
@@ -596,39 +650,59 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   // ---------- entrenamiento ----------
-  const TRAINING_GOALIE_LABEL: Record<"local" | "visita" | "ninguno", string> = {
-    local: "Arquero local", visita: "Arquero visita", ninguno: "Sin arquero",
-  }
+  /** Tres niveles para aprender de a poco: cada uno combina arquero + peso de bocha (mismo eje que
+   *  usa el partido normal) en una progresión con sentido, no perillas sueltas. */
+  const TRAINING_LEVELS: Array<{
+    value: "basico" | "medio" | "experto"
+    label: string
+    goalie: "local" | "visita" | "ninguno"
+    puckKind: PuckKind
+    hint: string
+  }> = [
+    { value: "basico", label: "Básico", goalie: "ninguno", puckKind: "pesada", hint: "Sin arquero y bocha pesada (lenta, casi no rebota): para agarrarle la mano al patinaje y al control." },
+    { value: "medio", label: "Medio", goalie: "visita", puckKind: "normal", hint: "Con arquero y bocha normal: a definir de verdad frente al arco." },
+    { value: "experto", label: "Experto", goalie: "visita", puckKind: "liviana", hint: "Con arquero y bocha liviana (rápida, rebota más): exige reflejos y precisión." },
+  ]
+  let trainingLevel: "basico" | "medio" | "experto" = "basico"
+  let trainingSurface: Surface = teamById(saved.settings.localId).surface
+
   function trainingScreen(): HTMLElement {
+    const lvl = TRAINING_LEVELS.find((l) => l.value === trainingLevel) ?? TRAINING_LEVELS[0]
     return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
       topBar("ENTRENAMIENTO", "#9ca3af", () => go("menu")),
       h("section", { class: "fp-panel" },
-        h("p", { class: "fp-note" }, "Practicá tiros solo, sin rival. Elegí qué arquero tenés en cancha."),
+        segmented<Surface>("Pista", "train-surf", SURFACES.map((v) => ({ value: v, label: SURFACE_LABEL[v] })), trainingSurface, (v) => { trainingSurface = v; render() }),
+      ),
+      h("section", { class: "fp-panel" },
+        h("p", { class: "fp-note" }, "Practicá tiros solo, sin rival. Elegí el nivel: cada uno suma arquero y una bocha distinta."),
+        segmented<"basico" | "medio" | "experto">("Nivel", "train-level", TRAINING_LEVELS.map((l) => ({ value: l.value, label: l.label })), trainingLevel, (v) => { trainingLevel = v; render() }),
+        h("p", { class: "fp-note" }, lvl.hint),
         h("div", { class: "fp-actions" },
-          ...(Object.keys(TRAINING_GOALIE_LABEL) as Array<"local" | "visita" | "ninguno">).map((g) =>
-            h("button", { class: "fp-btn solid", "data-key": `train-${g}`, onclick: () => startTraining(g) }, TRAINING_GOALIE_LABEL[g])),
+          h("button", { class: "fp-btn solid", "data-key": "train-start", onclick: () => startTraining(lvl.goalie, false, lvl.puckKind) }, `Entrenar — ${lvl.label}`),
         ),
       ),
       h("section", { class: "fp-panel" },
         h("h3", {}, "Penales · súper tiros"),
         h("p", { class: "fp-note" }, "Mano a mano contra el arquero rival, un penal tras otro, siempre con el tanque de energía lleno — para practicar la puntería y el súper tiro sin depender del cansancio."),
         h("div", { class: "fp-actions" },
-          h("button", { class: "fp-btn ye", "data-key": "train-penalties", onclick: () => startTraining("visita", true) }, "Practicar penales"),
+          h("button", { class: "fp-btn ye", "data-key": "train-penalties", onclick: () => startTraining("visita", true, "normal") }, "Practicar penales"),
         ),
       ),
     ))
   }
 
-  function startTraining(goalie: "local" | "visita" | "ninguno", penalties = false) {
+  function startTraining(goalie: "local" | "visita" | "ninguno", penalties = false, puckKind: PuckKind = "normal") {
     stopMatch()
     maybeAutoFullscreen()
-    trainingPlaying = { goalie, penalties }
+    trainingPlaying = { goalie, penalties, puckKind }
     screen = "match"
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
     const mo = matchOptions()
     const m = mountMatch(wrap, {
       ...mo,
+      surface: trainingSurface,
+      puckKind,
       duration: 600,
       training: { goalie, penalties },
       onEnd: () => { stopMatch(); go("training") },
@@ -934,6 +1008,48 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     showDialog("Instalar la app", text, [{ label: "Entendido", primary: true }])
   }
 
+  /** Ajustes de control desde la pausa: diestro/zurdo se aplica EN VIVO (no hace falta reiniciar).
+   *  Honda/botones sí reinicia — el esquema de botones tiene sus propios botones armados en el DOM
+   *  solo al montar el partido, no hay forma de aparecerlos/sacarlos sin volver a montar. */
+  function showControlSettings(wrap: HTMLElement) {
+    if (!match) return
+    const s = saved.settings
+    const cp = cupPlaying
+    const isDemo = demoPlaying
+    const tp = trainingPlaying
+    const restartWithNewScheme = () => {
+      if (isDemo) startDemo()
+      else if (tp) startTraining(tp.goalie, tp.penalties, tp.puckKind)
+      else if (cp) startCupMatch(cp.which, cp.home, cp.away)
+      else startMatch()
+    }
+    const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Ajustes de control" },
+      h("h2", { class: "fp-arcade" }, "CONTROL"),
+      segmented<string>("Dedos", "hand-pause", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => {
+        s.leftHanded = v === "l"
+        persist()
+        match?.setLeftHanded(s.leftHanded)
+      }),
+      segmented<"honda" | "botones">("Esquema", "scheme-pause", [
+        { value: "honda", label: "Honda (estirar y soltar)" },
+        { value: "botones", label: "Botones (stick + pase/tiro)" },
+      ], s.controlScheme, (v) => {
+        if (v === s.controlScheme) return
+        showDialog("¿Cambiar de esquema de control?", "Esto reinicia el partido — no hay forma de cambiar los botones en pantalla sin volver a armar la cancha.", [
+          { label: "Cambiar y reiniciar", danger: true, onClick: () => { s.controlScheme = v; persist(); restartWithNewScheme() } },
+          { label: "Cancelar", onClick: () => showControlSettings(wrap) },
+        ], wrap)
+      }),
+      segmented<string>("Rendimiento", "perf-pause", [{ value: "alta", label: "Alta calidad" }, { value: "ahorro", label: "Ahorro (celulares lentos)" }], s.graphicsSaver ? "ahorro" : "alta", (v) => {
+        s.graphicsSaver = v === "ahorro"
+        persist()
+        match?.setGraphicsSaver(s.graphicsSaver)
+      }),
+      h("button", { class: "fp-btn solid", "data-key": "back-pause", onclick: () => showPause(wrap) }, "‹ Volver a pausa"),
+    )
+    openModal(wrap, h("div", { class: "fp-overlay" }, box))
+  }
+
   function showPause(wrap: HTMLElement) {
     if (!match || match.ended || dialog) return
     match.pause()
@@ -945,10 +1061,11 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Pausa" },
       h("h2", { class: "fp-arcade" }, isDemo ? "DEMO EN PAUSA" : tp ? "ENTRENAMIENTO EN PAUSA" : "PAUSA"),
       h("button", { class: "fp-btn solid", "data-key": "resume", onclick: back }, "Continuar"),
+      isDemo ? null : h("button", { class: "fp-btn", "data-key": "control-settings", onclick: () => showControlSettings(wrap) }, "⚙️ Ajustes de control"),
       isDemo
         ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startDemo() }, "Otro partido demo")
         : tp
-        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie, tp.penalties) }, "Reiniciar entrenamiento")
+        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie, tp.penalties, tp.puckKind) }, "Reiniciar entrenamiento")
         : h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
             { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
             { label: "Cancelar", onClick: () => showPause(wrap) },

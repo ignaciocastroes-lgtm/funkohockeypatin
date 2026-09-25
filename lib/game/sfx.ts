@@ -13,7 +13,30 @@ export function audioUrl(file: string): string {
   return inline ?? `/audio/${file}`
 }
 
-/** Muestras de audio (no del público) que usa `Sfx` directamente — hoy solo el silbato real. */
+/**
+ * Trae los bytes de un audio, sin pasar por `fetch()` cuando es una URI incrustada (`data:...`).
+ * En el build de un solo archivo (juego.html) el audio va embebido en base64 — `fetch()` sobre una
+ * `data:` URI no es 100% confiable en todos los navegadores/WebViews móviles (es la causa real, más
+ * probable, de por qué la música y el silbato real nunca cargaban en el celular mientras los sonidos
+ * sintetizados sí se escuchaban: esos no necesitan traer nada, son puro oscilador). Para el build de
+ * Next (rutas `/audio/...` reales), sigue usando `fetch()` normal.
+ */
+export async function fetchAudioBytes(url: string): Promise<ArrayBuffer> {
+  if (url.startsWith("data:")) {
+    const comma = url.indexOf(",")
+    const meta = url.slice(5, comma) // ej: "audio/mpeg;base64"
+    const payload = url.slice(comma + 1)
+    if (!meta.includes("base64")) throw new Error("data: URI de audio sin base64")
+    const bin = atob(payload)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return bytes.buffer
+  }
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`no se pudo cargar ${url}`)
+  return res.arrayBuffer()
+}
+
 export const SFX_FILES = {
   whistle: "ref-whistle.mp3",
 } as const
@@ -47,8 +70,7 @@ export class Sfx {
 
   private loadWhistle(ctx: AudioContext) {
     this.whistleLoading = true
-    fetch(audioUrl(SFX_FILES.whistle))
-      .then((r) => r.arrayBuffer())
+    fetchAudioBytes(audioUrl(SFX_FILES.whistle))
       .then((data) => new Promise<AudioBuffer>((resolve, reject) => {
         const p = ctx.decodeAudioData(data, resolve, reject)
         if (p && typeof (p as Promise<AudioBuffer>).then === "function") (p as Promise<AudioBuffer>).then(resolve, reject)

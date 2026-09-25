@@ -8,6 +8,9 @@ export interface Team {
   id: string
   name: string
   color: string
+  /** Color del pantalón, si es distinto al de la camiseta (ej: Chile roja/pantalón azul, España
+   *  roja/amarillo). Opcional: sin esto, el jugador se ve de un solo color, como siempre. */
+  pantsColor?: string
   /** Escudo del equipo para el marcador (un emoji, del set CRESTS — incluye banderas). */
   crest: string
   /** Pista de localía: la superficie donde juega cuando es local. */
@@ -70,14 +73,14 @@ const roster = (names: string[], kinds: SkaterKind[] = DEFAULT_KINDS): RosterPla
  * reales. `distinctColors()` ya separa los colores en cancha si dos selecciones quedan parecidas.
  */
 export const NATIONAL_TEAMS: Team[] = [
-  { id: "n-es", name: "ESPAÑA", color: "#c8102e", crest: "🇪🇸", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Matador", "Furia", "Toro", "Brava", "Sol", "Fiesta"]) },
+  { id: "n-es", name: "ESPAÑA", color: "#c8102e", pantsColor: "#ffc400", crest: "🇪🇸", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Matador", "Furia", "Toro", "Brava", "Sol", "Fiesta"]) },
   { id: "n-pt", name: "PORTUGAL", color: "#046a38", crest: "🇵🇹", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Navegante", "Fado", "Océano", "Vela", "Farol", "Bravo"]) },
-  { id: "n-ar", name: "ARGENTINA", color: "#6cace4", crest: "🇦🇷", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Gaucho", "Pampa", "Tango", "Che", "Mate", "Fueguito"]) },
-  { id: "n-cl", name: "CHILE", color: "#0039a6", crest: "🇨🇱", surface: "madera", category: "mixto", builtin: true, roster: roster(["Cóndor", "Andino", "Volcán", "Austral", "Copihue", "Roble"]) },
+  { id: "n-ar", name: "ARGENTINA", color: "#6cace4", pantsColor: "#141a2e", crest: "🇦🇷", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Gaucho", "Pampa", "Tango", "Che", "Mate", "Fueguito"]) },
+  { id: "n-cl", name: "CHILE", color: "#d52b1e", pantsColor: "#0039a6", crest: "🇨🇱", surface: "madera", category: "mixto", builtin: true, roster: roster(["Cóndor", "Andino", "Volcán", "Austral", "Copihue", "Roble"]) },
   { id: "n-it", name: "ITALIA", color: "#14b8a6", crest: "🇮🇹", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Azzurro", "Vespa", "Fontana", "Góndola", "Vulcano", "Pasta"]) },
-  { id: "n-fr", name: "FRANCIA", color: "#002654", crest: "🇫🇷", surface: "madera", category: "mixto", builtin: true, roster: roster(["Gallo", "Eiffel", "Brisa", "Lavanda", "Bistró", "Marino"]) },
-  { id: "n-br", name: "BRASIL", color: "#ffdf00", crest: "🇧🇷", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Samba", "Carioca", "Malandro", "Zagueiro", "Batucada", "Ginga"]) },
-  { id: "n-de", name: "ALEMANIA", color: "#f4f4f5", crest: "🇩🇪", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Panzer", "Águila", "Bosque", "Acero", "Rayo", "Muralla"]) },
+  { id: "n-fr", name: "FRANCIA", color: "#002654", pantsColor: "#ffffff", crest: "🇫🇷", surface: "madera", category: "mixto", builtin: true, roster: roster(["Gallo", "Eiffel", "Brisa", "Lavanda", "Bistró", "Marino"]) },
+  { id: "n-br", name: "BRASIL", color: "#ffdf00", pantsColor: "#002776", crest: "🇧🇷", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Samba", "Carioca", "Malandro", "Zagueiro", "Batucada", "Ginga"]) },
+  { id: "n-de", name: "ALEMANIA", color: "#f4f4f5", pantsColor: "#1a1a1a", crest: "🇩🇪", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Panzer", "Águila", "Bosque", "Acero", "Rayo", "Muralla"]) },
   { id: "n-ad", name: "ANDORRA", color: "#e63946", crest: "🇦🇩", surface: "madera", category: "mixto", builtin: true, roster: roster(["Pirineo", "Nieve", "Cumbre", "Refugio", "Alud", "Sendero"]) },
   { id: "n-ao", name: "ANGOLA", color: "#f9a01b", crest: "🇦🇴", surface: "cemento", category: "mixto", builtin: true, roster: roster(["Kalunga", "Baobab", "Tambor", "Savana", "Kianda", "Muxima"]) },
   { id: "n-mx", name: "MÉXICO", color: "#006341", crest: "🇲🇽", surface: "sintetico", category: "mixto", builtin: true, roster: roster(["Azteca", "Charro", "Nopal", "Águila", "Fiesta", "Volcán"]) },

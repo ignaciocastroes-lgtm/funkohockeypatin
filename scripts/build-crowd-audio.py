@@ -20,7 +20,16 @@ Piezas (cada una sale de UNA grabación, sin solaparse dentro de la misma):
   crowd-victory   público gritando (el nombre decía "ja-ganhou" pero Ignacio         -> una vez
                   confirmó que es genérico, no un cántico puntual), para el festejo
                   de partido ganado
+  crowd-fiesta    música de fondo de la tribuna (4ª capa de bucle, junto a bedA/bedC/energy) —     -> bucle
+                  a propósito CASI ENTERA (~80s, no un recorte corto): es la única música de
+                  fondo de verdad, un loop de 6-8s se sentía repetitivo — Ignacio la probó y la
+                  pidió de vuelta más larga
 No hay, todavía, ningún audio real de abucheo/protesta — nadie subió uno.
+NOTA sobre crowd-fiesta: no hay una entrada ORIG para este en la sección de abajo porque el original
+(82s, 960 KB) no vino del mismo lote que los otros 3 — se recuperó del zip del proyecto ya subido
+(estaba en public/audio/ de una sesión anterior, nunca pasado por este script). El primer recorte
+(6s) resultó ser un error: para música de fondo, casi toda la duración es lo que hace que no se sienta
+repetitivo. Si alguna vez aparece el original suelto, agregarlo a ORIG y a los jobs como los demás.
 Los bucles NO llevan el empalme grabado: el motor los solapa con un fundido en cruz al reproducirlos.
 """
 import argparse, glob, os, subprocess, sys

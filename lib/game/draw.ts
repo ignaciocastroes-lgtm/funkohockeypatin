@@ -1,4 +1,4 @@
-import { CREASE_RADIUS, GOAL, GOALS, MATCH, RINK, bestPassTarget } from "../engine"
+import { CREASE_RADIUS, GOAL, GOALS, MATCH, RINK, SKATER, bestPassTarget } from "../engine"
 import type { Camera, Side, Skater, Surface, World } from "../engine"
 import { drawGlyphs } from "./glyphs"
 import { FLOOR_BASE, PLATE_BRAND_H, auraColor, goalieStickAngle, edgeAnchor, hudAvoidRects, pickCueColor, plateSize, rgb, slideOffRects } from "./cues"
@@ -8,6 +8,8 @@ export interface DrawOptions {
   /** Lado del equipo humano (0), o null si no hay humano (demo): activa el aura de "mi equipo". */
   humanSide?: Side | null
   colors: [string, string]
+  /** Color del pantalón por lado, si el equipo tiene uno distinto al de la camiseta. */
+  pantsColors?: [string | undefined, string | undefined]
   names: [string, string]
   crests: [string, string]
   /** true mientras se muestra el festejo de un gol de combo (para el marcador: "¡GOLAZO!"). */
@@ -22,6 +24,11 @@ export interface DrawOptions {
   crowdExcitement?: number
   alpha: number
   fontFamily: string
+  /** Modo ahorro (ver `MatchOptions.graphicsSaver`): menos densidad de público y sin banderitas. */
+  graphicsSaver?: boolean
+  /** 0..1: cuánto se corre el marcador hacia la derecha y se atenúa — sube cuando la pelota (y el
+   *  jugador controlado) están sobre esa esquina, para no taparlos. 0 = posición/opacidad normal. */
+  scorePanelShift?: number
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
@@ -373,7 +380,29 @@ function drawHair(ctx: CanvasRenderingContext2D, style: 0 | 1 | 2 | 3, hc: strin
   ctx.restore()
 }
 
-export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: string, alpha: number, controlled: boolean, carrying: boolean, comboTouches: number, look: Look = NO_LOOK) {
+// Caché del degradé del "aura de compañero": para un jugador dado, `look.aura` y su radio `r` (en
+// METROS, no depende del zoom de cámara) son siempre los mismos durante todo el partido — no hace
+// falta reconstruir el gradiente en cada cuadro para cada compañero (antes: hasta 3-4
+// `createRadialGradient` por cuadro, uno por compañero, 60 veces por segundo). Por `ctx` (WeakMap)
+// para no filtrar memoria entre partidos si algún día hay más de un canvas vivo a la vez.
+const auraGradientCache = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasGradient>>()
+function auraGradientFor(ctx: CanvasRenderingContext2D, color: string, r: number): CanvasGradient {
+  let cache = auraGradientCache.get(ctx)
+  if (!cache) { cache = new Map(); auraGradientCache.set(ctx, cache) }
+  const key = `${color}|${r}`
+  let g = cache.get(key)
+  if (!g) {
+    const gr = r * 2.15
+    g = ctx.createRadialGradient(0, 0, r * 0.7, 0, 0, gr)
+    g.addColorStop(0, rgba(color, 0.72))
+    g.addColorStop(0.55, rgba(color, 0.32))
+    g.addColorStop(1, rgba(color, 0))
+    cache.set(key, g)
+  }
+  return g
+}
+
+export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: string, alpha: number, controlled: boolean, carrying: boolean, comboTouches: number, look: Look = NO_LOOK, pantsColor?: string) {
   const x = lerp(s.px, s.x, alpha)
   const y = lerp(s.py, s.y, alpha)
   const r = s.radius
@@ -405,6 +434,36 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
   ctx.save()
   ctx.translate(x, y)
 
+  // Patines: un par asomando bajo el cuerpo, en zancada alternada cuando se mueve — se dibujan
+  // ANTES de la sombra/cuerpo así el cuerpo los tapa en parte (look Funko: cuerpo/cabeza grande,
+  // pies chicos asomando, no piernas articuladas de verdad). Sin estado nuevo en el motor: la fase
+  // sale de un reloj mezclado con la velocidad, no de distancia recorrida — más simple, se ve igual.
+  // Parado (`speed` chica) NO se anima: nada de `performance.now()` ahí — quieto de verdad, y de
+  // paso determinístico (lo pide un test: dos cuadros del mismo jugador quieto salen idénticos).
+  {
+    const hxv = Math.cos(s.heading), hyv = Math.sin(s.heading)
+    const lxv = -hyv, lyv = hxv
+    const moving = speed > 0.3
+    const t = moving ? (performance.now() / 1000) * (1.6 + Math.min(3, speed * 0.5)) : 0
+    const strideAmp = moving ? Math.min(0.16, 0.03 + speed * 0.018) : 0
+    const footSpacing = r * 0.5
+    for (const side of [-1, 1] as const) {
+      const ph = moving ? Math.sin(side === -1 ? t : t + Math.PI) : 0
+      const along = -r * 0.3 + ph * strideAmp
+      const fx = hxv * along + lxv * side * footSpacing
+      const fy = hyv * along + lyv * side * footSpacing
+      ctx.save()
+      ctx.translate(fx, fy)
+      ctx.rotate(s.heading)
+      ctx.fillStyle = "#27272a"
+      ctx.beginPath(); ctx.ellipse(0, 0, r * 0.28, r * 0.17, 0, 0, Math.PI * 2); ctx.fill()
+      ctx.fillStyle = "#a1a1aa" // ruedas
+      ctx.beginPath(); ctx.arc(-r * 0.13, 0, r * 0.05, 0, Math.PI * 2); ctx.fill()
+      ctx.beginPath(); ctx.arc(r * 0.13, 0, r * 0.05, 0, Math.PI * 2); ctx.fill()
+      ctx.restore()
+    }
+  }
+
   if (controlled) {
     // Marcador de piso: un beacon pulsante DEBAJO del jugador. Amarillo por defecto; si el equipo
     // es amarillo/naranja (Brasil, Angola) pasa a blanco (`pickCueColor`), para que no se pierda
@@ -425,13 +484,9 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
     // Aura de compañero: un resplandor ESTÁTICO del color del equipo alrededor del cuerpo. El aro
     // fino de color no alcanzaba: esto agrega superficie (se lee de lejos) y, con el anillo claro
     // de más abajo, un canal que no depende del tono. Estático a propósito: "yo" es el que pulsa.
-    const gr = r * 2.15
-    const glow = ctx.createRadialGradient(0, 0, r * 0.7, 0, 0, gr)
-    glow.addColorStop(0, rgba(look.aura, 0.72))
-    glow.addColorStop(0.55, rgba(look.aura, 0.32))
-    glow.addColorStop(1, rgba(look.aura, 0))
+    const glow = auraGradientFor(ctx, look.aura, r)
     ctx.fillStyle = glow
-    ctx.beginPath(); ctx.arc(0, 0, gr, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.arc(0, 0, r * 2.15, 0, Math.PI * 2); ctx.fill()
   }
   // sombra
   ctx.fillStyle = "rgba(0,0,0,0.35)"
@@ -441,15 +496,56 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
   ctx.lineWidth = 0.1
   ctx.lineCap = "round"
   ctx.beginPath()
-  // palo: un poco más largo que antes (un palo real anda por 1.02 m), le da más alcance visual
-  ctx.moveTo(Math.cos(s.stickAngle) * r * 0.5, Math.sin(s.stickAngle) * r * 0.5)
-  ctx.lineTo(Math.cos(s.stickAngle) * (r + 0.62), Math.sin(s.stickAngle) * (r + 0.62))
+  // palo: un poco más largo que antes (un palo real anda por 1.02 m), le da más alcance visual.
+  // Seguimiento del golpe: en hockey de verdad el palo gira para pegarle a la bocha (no empuja de
+  // frente) — acompaña la dirección con un giro de tronco y hombros. No hay un estado de "cargando"
+  // antes del golpe (el tiro es instantáneo en la física), pero SÍ se puede mostrar el acompañamiento
+  // DESPUÉS: reusando `pickupCooldown` (que ya cuenta para abajo desde `kickCooldown` justo al
+  // patear, sin agregar nada nuevo al motor) para pasar de largo el ángulo del tiro un instante y
+  // volver, como el "follow-through" de un golpe real.
+  const kickT = s.pickupCooldown > 0 ? 1 - s.pickupCooldown / SKATER.kickCooldown : 1
+  // De qué lado sostiene el palo (mano izq/der): mismo criterio para el reposo Y el swing, así el
+  // brazo y el golpe siempre concuerdan — un tiro sale de revés o de derecho según de qué lado haya
+  // quedado la bocha en ESE momento, no siempre del mismo lado. Sin estado nuevo: se deriva de la
+  // diferencia entre hacia dónde mira el cuerpo y hacia dónde apunta el palo, que el motor ya calcula.
+  const handSide = Math.sin(s.heading - s.stickAngle) >= 0 ? 1 : -1
+  let swingAngle = s.stickAngle
+  if (kickT < 1) {
+    const ease = (1 - kickT) ** 2 // arranca fuerte, se asienta rápido
+    swingAngle += handSide * 0.55 * ease
+  }
+  // Hombro (borde del cuerpo, del lado de la mano) → mano (sobre el palo, un poco afuera del
+  // cuerpo): así el palo se ve TOMADO, no flotando solo desde el centro.
+  const shoulderAngle = s.heading + handSide * 0.85
+  const shoulderX = Math.cos(shoulderAngle) * r * 0.78
+  const shoulderY = Math.sin(shoulderAngle) * r * 0.78
+  const gripX = Math.cos(swingAngle) * r * 0.95
+  const gripY = Math.sin(swingAngle) * r * 0.95
+  ctx.strokeStyle = "#ffdfc4"
+  ctx.lineWidth = 0.085
+  ctx.beginPath(); ctx.moveTo(shoulderX, shoulderY); ctx.lineTo(gripX, gripY); ctx.stroke()
+  ctx.fillStyle = "#e8a976" // guante, sobre la mano
+  ctx.beginPath(); ctx.arc(gripX, gripY, 0.07, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = "#8b5a2b"
+  ctx.lineWidth = 0.1
+  ctx.beginPath()
+  ctx.moveTo(gripX, gripY)
+  ctx.lineTo(Math.cos(swingAngle) * (r + 0.62), Math.sin(swingAngle) * (r + 0.62))
   ctx.stroke()
   // cuerpo — se apaga (menos saturado, más gris) a medida que se cansa: la energía SE VE, no
   // solo se lee en una rayita del HUD. Con el tanque lleno no cambia nada.
   const fatigue = Math.max(0, Math.min(1, (100 - s.stamina) / 100))
   ctx.fillStyle = color
   ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill()
+  if (pantsColor) {
+    // "Pantalón": franja inferior del cuerpo en un color distinto al de la camiseta (ej. Chile roja
+    // con pantalón azul, España roja con amarillo) — recortada al mismo círculo del cuerpo.
+    ctx.save()
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.clip()
+    ctx.fillStyle = pantsColor
+    ctx.fillRect(-r, r * 0.22, r * 2, r * 1.2)
+    ctx.restore()
+  }
   if (fatigue > 0.15) {
     ctx.fillStyle = "#52525b"
     ctx.globalAlpha = fatigue * 0.5
@@ -564,12 +660,27 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
  */
 const STANDS_DEPTH = 2.0
 const FAN_SPACING = 0.55
+/** Modo ahorro: separación más ancha (menos hinchas) y sin banderitas — ver `drawCrowdStands`. */
+const FAN_SPACING_SAVER = 0.95
 const FAN_PALETTE = ["#f97316", "#22d3ee", "#facc15", "#a855f7", "#ef4444", "#4ade80", "#e2e8f0", "#38bdf8"]
+/** Cuántos escalones de opacidad se agrupan al dibujar (ver `drawCrowdStands`): más escalones =
+ *  más fiel al brillo continuo original, menos = menos cambios de estado en el canvas por cuadro. */
+const FAN_ALPHA_BUCKETS = 5
 function fanHash(i: number, j: number): number {
   const h = Math.sin(i * 127.1 + j * 311.7) * 43758.5453
   return h - Math.floor(h)
 }
-function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number) {
+/**
+ * Antes: un `beginPath/arc/fill` (y a veces un cambio de `font`) POR HINCHA, cada cuadro — con la
+ * tribuna llena eran cientos de llamadas de dibujo solo para esto, el gasto más alto de gráficos en
+ * el juego. Ahora se agrupan los puntos por color y franja de opacidad (`FAN_ALPHA_BUCKETS`) en un
+ * solo `Path2D` por grupo: se pasa de ~cientos de `fill()` por cuadro a unas ~40. El brillo
+ * individual de cada hincha se pierde un poco de granularidad (5 escalones en vez de continuo) pero
+ * a simple vista no se nota. En modo ahorro (`saver`), además: menos densidad y sin banderitas (el
+ * `fillText` de emoji es lo más caro de todo esto, más que los puntos).
+ */
+function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean) {
+  const spacing = saver ? FAN_SPACING_SAVER : FAN_SPACING
   const x0 = cam.cx - cam.width / 2, x1 = cam.cx + cam.width / 2
   const y0 = cam.cy - cam.height / 2, y1 = cam.cy + cam.height / 2
   const bands = [
@@ -579,28 +690,54 @@ function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement:
     { bx0: RINK.length, bx1: RINK.length + STANDS_DEPTH, by0: 0, by1: RINK.width }, // derecha
   ]
   const bob = 0.05 + 0.18 * Math.max(0, Math.min(1, excitement))
-  ctx.save()
+  // bucket key = colorIndex * FAN_ALPHA_BUCKETS + alphaBucket
+  const dots = new Map<number, Array<[number, number]>>()
+  const flags: Array<[number, number, string]> = []
   for (const b of bands) {
-    const cx0 = Math.max(b.bx0, x0 - FAN_SPACING), cx1 = Math.min(b.bx1, x1 + FAN_SPACING)
-    const cy0 = Math.max(b.by0, y0 - FAN_SPACING), cy1 = Math.min(b.by1, y1 + FAN_SPACING)
+    const cx0 = Math.max(b.bx0, x0 - spacing), cx1 = Math.min(b.bx1, x1 + spacing)
+    const cy0 = Math.max(b.by0, y0 - spacing), cy1 = Math.min(b.by1, y1 + spacing)
     if (cx1 <= cx0 || cy1 <= cy0) continue
-    const i0 = Math.floor(cx0 / FAN_SPACING), i1 = Math.ceil(cx1 / FAN_SPACING)
-    const j0 = Math.floor(cy0 / FAN_SPACING), j1 = Math.ceil(cy1 / FAN_SPACING)
+    const i0 = Math.floor(cx0 / spacing), i1 = Math.ceil(cx1 / spacing)
+    const j0 = Math.floor(cy0 / spacing), j1 = Math.ceil(cy1 / spacing)
     for (let i = i0; i <= i1; i++) {
       for (let j = j0; j <= j1; j++) {
         const h = fanHash(i, j)
-        const fx = i * FAN_SPACING + (h - 0.5) * 0.2
-        const fy = j * FAN_SPACING + (fanHash(j, i) - 0.5) * 0.2
+        const fx = i * spacing + (h - 0.5) * 0.2
+        const fy = j * spacing + (fanHash(j, i) - 0.5) * 0.2
         if (fx < b.bx0 || fx > b.bx1 || fy < b.by0 || fy > b.by1) continue
         const phase = h * Math.PI * 2
         const yy = fy - Math.abs(Math.sin(now * 3.1 + phase)) * bob * (0.5 + 0.5 * fanHash(j, i))
-        ctx.globalAlpha = 0.5 + 0.28 * fanHash(i + 1, j + 1)
-        ctx.fillStyle = FAN_PALETTE[Math.floor(h * FAN_PALETTE.length) % FAN_PALETTE.length]
-        ctx.beginPath()
-        ctx.arc(fx, yy, 0.15, 0, Math.PI * 2)
-        ctx.fill()
+        // Una fracción chica de la tribuna, banderita en vez de puntito — no todos, se recarga la
+        // vista (y en modo ahorro, directamente ninguna: es lo más caro de dibujar de toda la tribuna).
+        if (!saver && fanHash(i + 7, j + 3) < 0.1) {
+          flags.push([fx, yy, crests[fanHash(i + 3, j + 7) < 0.5 ? 0 : 1]])
+          continue
+        }
+        const colorIdx = Math.floor(h * FAN_PALETTE.length) % FAN_PALETTE.length
+        const alphaBucket = Math.floor((0.5 + 0.28 * fanHash(i + 1, j + 1)) * FAN_ALPHA_BUCKETS)
+        const key = colorIdx * FAN_ALPHA_BUCKETS + alphaBucket
+        let arr = dots.get(key)
+        if (!arr) { arr = []; dots.set(key, arr) }
+        arr.push([fx, yy])
       }
     }
+  }
+  ctx.save()
+  for (const [key, pts] of dots) {
+    const colorIdx = Math.floor(key / FAN_ALPHA_BUCKETS)
+    const alphaBucket = key % FAN_ALPHA_BUCKETS
+    ctx.fillStyle = FAN_PALETTE[colorIdx]
+    ctx.globalAlpha = (alphaBucket + 0.5) / FAN_ALPHA_BUCKETS
+    ctx.beginPath()
+    for (const [px, py] of pts) { ctx.moveTo(px + 0.15, py); ctx.arc(px, py, 0.15, 0, Math.PI * 2) }
+    ctx.fill()
+  }
+  if (flags.length) {
+    ctx.globalAlpha = 0.72
+    ctx.font = `0.5px ${fontFamily}, system-ui`
+    ctx.textAlign = "center"
+    ctx.textBaseline = "middle"
+    for (const [fx, fy, crest] of flags) ctx.fillText(crest, fx, fy)
   }
   ctx.restore()
 }
@@ -615,7 +752,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   ctx.scale(cam.ppm, cam.ppm)
   ctx.translate(-cam.cx, -cam.cy)
 
-  drawCrowdStands(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000)
+  drawCrowdStands(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000, o.crests, o.fontFamily, !!o.graphicsSaver)
   drawFloor(ctx, w.surface, cam)
   drawMarkings(ctx)
   drawGoals(ctx)
@@ -635,6 +772,26 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     const gy = lerp(g.py, g.y, alpha)
     const c = o.colors[g.side]
     const facing = g.side === 0 ? 0 : Math.PI // side 0 mira hacia +x (su red queda a la izquierda), side 1 hacia -x
+    // Paso ruso: moviéndose rápido de costado no desliza como un patinador de a poco — va a los
+    // saltitos cortos, pie-pie, para no perder nunca el plano frente al tiro. Una marca de patín
+    // corta bajo los pies, en coordenadas de MUNDO (no gira con el cuerpo), que pulsa más rápido
+    // cuanto más rápido se mueve lateralmente.
+    const lateral = Math.abs(g.vy)
+    if (lateral > 0.4) {
+      ctx.save()
+      ctx.globalAlpha = 0.35 + 0.25 * Math.abs(Math.sin(performance.now() / (170 - Math.min(90, lateral * 14))))
+      ctx.strokeStyle = "#d4d4d8"
+      ctx.lineWidth = 0.04
+      ctx.lineCap = "round"
+      const side = g.vy > 0 ? 1 : -1
+      const fx = g.radius * 0.5
+      const fy = side * g.radius * 0.85
+      ctx.beginPath()
+      ctx.moveTo(gx - fx, gy + fy)
+      ctx.lineTo(gx + fx, gy + fy)
+      ctx.stroke()
+      ctx.restore()
+    }
     ctx.save()
     ctx.translate(gx, gy)
     // sombra
@@ -738,12 +895,22 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
       passTarget: s.id === passId,
       ppm: cam.ppm,
     }
-    drawSkater(ctx, s, o.colors[s.side], alpha, controlled, s.id === w.puck.carrierId, comboTouches, look)
+    drawSkater(ctx, s, o.colors[s.side], alpha, controlled, s.id === w.puck.carrierId, comboTouches, look, o.pantsColors?.[s.side])
   }
 
   // bocha (no disco de NHL, y NO una pelota de básquet): esfera chica y dura, sin el borde negro
   // grueso que la hace leer como básquetbol — un brillo angosto y compacto, nomás.
   const bpr = pr * 0.62
+  if (w.puck.carrierId) {
+    // Imán al palo: mientras alguien la controla, un resplandor suave y quieto (no pulsa — lo que
+    // ya pulsa es el beacon del jugador controlado, esto es otra señal) que la "pega" visualmente
+    // a la pala del palo, para que se lea que está imantada y no solo apoyada.
+    ctx.save()
+    ctx.globalAlpha = 0.5
+    ctx.fillStyle = "#7dd3fc"
+    ctx.beginPath(); ctx.arc(pxp, pyp, bpr * 2.1, 0, Math.PI * 2); ctx.fill()
+    ctx.restore()
+  }
   ctx.fillStyle = "#9a3412"
   ctx.beginPath(); ctx.arc(pxp, pyp, bpr, 0, Math.PI * 2); ctx.fill()
   ctx.fillStyle = "#ea580c"
@@ -898,7 +1065,12 @@ export function drawHud(ctx: CanvasRenderingContext2D, w: World, o: DrawOptions,
   const vh = hudH
   const { boxW, boxH: fullH } = plateSize(vw, vh)
   const boxH = fullH - PLATE_BRAND_H // alto del marcador en sí (sin la tira de marca de arriba)
-  const bx = 8
+  const shift = Math.max(0, Math.min(1, o.scorePanelShift ?? 0))
+  // Corrido a la derecha (deja libre la esquina donde está la jugada) y atenuado, en vez de un
+  // salto: `shift` ya viene suavizado cuadro a cuadro desde afuera, así que acá alcanza con
+  // interpolar posición y opacidad en línea recta.
+  const bx = 8 + (vw - boxW - 16) * shift
+  const panelAlpha = 0.94 - 0.56 * shift // hasta ~0.38 cuando está del todo corrido
   const by0 = 8 // borde de arriba de la placa
   const by = by0 + PLATE_BRAND_H // donde empieza el marcador, debajo de la tira de marca
   const radius = 10
@@ -931,7 +1103,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, w: World, o: DrawOptions,
   ctx.beginPath()
   if (ctx.roundRect) ctx.roundRect(bx, by0, boxW, fullH, radius); else ctx.rect(bx, by0, boxW, fullH)
   ctx.fillStyle = SB_PANEL
-  ctx.globalAlpha = 0.94
+  ctx.globalAlpha = panelAlpha
   ctx.fill()
   ctx.globalAlpha = 1
   ctx.lineWidth = 1

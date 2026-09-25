@@ -1,5 +1,6 @@
 export type Surface = "madera" | "cemento" | "sintetico"
 export type SkaterKind = "equilibrado" | "pesado" | "veloz"
+export type PuckKind = "liviana" | "normal" | "pesada"
 export type Side = 0 | 1
 export type Phase = "play" | "timeOn" | "goal" | "ended"
 
@@ -41,6 +42,10 @@ export interface Goalie {
   /** Tiempo muerto de reacción restante desde que vio salir un disparo (s). */
   reactTimer: number
   wasIncoming: boolean
+  /** Ángulo de vuelo del puck la última vez que estaba "entrando" — para notar un desvío (poste,
+   *  patinador) de golpe y volver a girar hacia la nueva trayectoria, en vez de seguir apuntando
+   *  adonde iba ANTES del desvío. null si no hay un tiro en curso. */
+  lastShotAngle: number | null
 }
 
 export interface Puck {
@@ -86,6 +91,10 @@ export interface WorldConfig {
   /** Tipos por equipo, en orden (el índice 0 es el capitán). */
   kinds?: [SkaterKind[], SkaterKind[]]
   names?: [string[], string[]]
+  /** Peso de la bocha: cambia velocidad máxima, frenado y rebote (por defecto "normal"). Más
+   *  pesada = más lenta y previsible (para aprender); más liviana = más rápida y rebota más
+   *  (exige más precisión). Ver `PUCK_KINDS`. */
+  puckKind?: PuckKind
 }
 
 export interface BenchEntry {
@@ -109,6 +118,7 @@ export interface ComboState {
 
 export interface World {
   surface: Surface
+  puckKind: PuckKind
   time: number
   steps: number
   clock: number
@@ -139,4 +149,7 @@ export interface World {
   /** Al que le hicieron el gol saca con la pelota (no un saque neutral): quién, hasta el próximo
    *  saque, que la consume y vuelve a null. */
   nextKickoffSide: Side | null
+  /** Penal en curso: mientras dure, el arquero se queda parado en la línea (no puede adelantarse a
+   *  cerrar el ángulo, como en un penal de verdad) — se apaga solo en el próximo saque normal. */
+  penaltyActive: boolean
 }

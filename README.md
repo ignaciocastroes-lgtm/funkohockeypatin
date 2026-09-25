@@ -4,23 +4,208 @@ Hockey sobre patines (rink hockey) arcade, en una pista reglamentaria de **40 ×
 jugarse en el teléfono en horizontal con **dos dedos**. Incluye partido suelto y un modo **Copa** de
 eliminación directa a 4 equipos.
 
+## Ronda 39 — auditoría de UI/rendimiento + bocha, entrenamiento y arquero
+
+Punto de partida: auditoría pedida sobre el tamaño/posición de los botones de pase y tiro, el marcador
+tapando la jugada, dónde viven los ajustes de control, el modo entrenamiento, código muerto y
+rendimiento en celulares. De ahí salieron pedidos concretos de gameplay (bocha por peso, arquero,
+compañeros IA, sonido de barandas). Todo lo de abajo está **compilado limpio** (`tsc --noEmit`; sin
+`node_modules` no hay forma de instalar los tipos de `node`/`react`/`next`, así que quedan errores de
+"no encuentro el módulo" en `app/*.tsx` y en los tests — pero ninguno de esos errores está en el
+código que se tocó, se filtraron línea por línea) y **pasa los 233 tests existentes** (`pnpm test`, corridos con `node --test` sobre el build de
+`tsc -p tsconfig.test.json`, sin necesitar `node_modules`). Lo que NO se hizo, honestamente: abrir la
+app en un navegador real — este entorno no tiene uno. Todo lo visual (los botones NES-style, el
+marcador corriéndose, el paso del arquero) está verificado por lectura de código y por los tests, no
+por haberlo visto en pantalla. Antes de dar esto por bueno de verdad: `pnpm install && pnpm dev` y
+jugar unas partidas con las manos.
+
+**Motor (`lib/engine`)**
+- **Tres bochas por peso** (`PuckKind`: `pesada` / `normal` / `liviana`, en `constants.ts` como
+  `PUCK_KINDS`): multiplican velocidad máxima, frenado y rebote. Pesada = más lenta y previsible;
+  liviana = más rápida y con más rebote. Mismo eje que usan después el partido normal y el
+  entrenamiento — no son dos sistemas separados. Restitución con tope en 0.95 (ni la más liviana pierde
+  la energía de una pelota de goma para siempre).
+- **Arquero — despeje activo con el palo**: antes, una atajada (no-combo) era un rebote elástico puro,
+  "a lo que caiga". Ahora se le suma un empuje extra hacia el costado y hacia afuera del propio arco
+  (`GOALIE.clearSpeed`), más fuerte cuanto más fuerte llegó el tiro — un arquero de verdad saca la
+  bocha de encima, no la deja picar.
+- **Arquero — el bug real de "se cuelan porque no alcanzan a girar"**: encontrado en `updateGoalies` —
+  cuando la bocha se desvía (poste, patinador) estando ya "entrando", el arquero seguía apuntando hacia
+  donde iba ANTES del desvío (el retardo de reacción solo se disparaba en el primer flanco de
+  "entrando", nunca de nuevo). Ahora se detecta el cambio brusco de ángulo de vuelo y se le da un
+  instante corto para regirar (`GOALIE.deflectionDelay`, más corto que el retardo de reacción inicial
+  porque ya estaba alerta, no arranca de cero).
+- **Camera.zoom eliminado**: código muerto real, confirmado sin ninguna referencia en todo el proyecto
+  — el campo y su rango quedaban de un pellizco de zoom que ya se había sacado hace rondas.
+- **Compañeros IA y sonido de barandas — auditado, no tocado**: ya funcionaban como se pidió. El
+  control salta automático al compañero que agarra la bocha (`selectControlled`), así que la IA nunca
+  dispara "por vos" — solo lo hace mientras vos seguís controlando a otro. El evento `board` ya tiene
+  sonido conectado (`sfx.ts` → `case "board"`). Se dejaron así para no arriesgar algo que ya andaba.
+
+**Juego (`lib/game`)**
+- **Marcador y botones PASE/TIRO se atenúan cerca de la jugada**: si la pelota (o tu jugador) quedan
+  bajo esa esquina, el marcador se corre a la derecha y se atenúa (con inercia, no un salto), y los
+  botones de acción bajan de opacidad — sin moverlos, porque mover un botón de acción debajo del
+  pulgar sería peor que dejarlo fijo.
+- **Botones PASE/TIRO — estética "mando de NES"**: 74px → **96px**, con degradé + sombra (cuerpo
+  abombado, no un círculo plano) y hundimiento visual al presionar.
+- **Arquero — paso ruso**: marca de patín lateral bajo los pies (coordenadas de mundo, no gira con el
+  cuerpo), que pulsa más rápido cuanto más rápido se mueve de costado.
+- **Rendimiento**: el aura de "compañero" (gradiente radial) se creaba de cero 60 veces por segundo
+  por cada compañero en pantalla — ahora se cachea por color/radio. La tribuna de público pasó de un
+  `beginPath/arc/fill` (y a veces `font`) por hincha, cada cuadro, a agrupar por color y franja de
+  opacidad en un `Path2D` por grupo: de ~cientos de `fill()` por cuadro a ~40. Switch "Rendimiento:
+  Alta/Ahorro" nuevo en el diálogo de pausa — en modo ahorro, menos densidad de tribuna y sin
+  banderitas (lo más caro de dibujar ahí), en vivo sin reiniciar el partido.
+- **`app/lab/` eliminado**: carpeta de ruta de Next.js vacía, sin usar.
+
+**App (`lib/app`)**
+- Selector de bocha ("Pesada/Normal/Liviana") en la pantalla de armado de partido, persistido en
+  `Settings.puckKind`.
+- **Entrenamiento rediseñado como progresión real**: Básico (sin arquero, bocha pesada) → Medio (con
+  arquero, bocha normal) → Experto (con arquero, bocha liviana) — antes era un selector suelto de
+  arquero sin relación con dificultad. La práctica de penales queda igual (ya estaba bien).
+- Switch de rendimiento en pausa (ver arriba), persistido en `Settings.graphicsSaver`.
+- `storage.ts` sanitiza los campos nuevos (`puckKind`, `graphicsSaver`) al cargar partidas guardadas
+  de versiones anteriores que no los tenían — no revienta con datos viejos.
+
+**Archivos tocados**: `lib/engine/{types,constants,world,camera}.ts`, `lib/game/{match,draw}.ts`,
+`lib/app/{app,storage}.ts`. Nada en `lib/engine/ai.ts`, `lib/game/sfx.ts` ni `tests/` (se auditaron,
+no hicieron falta cambios).
+
+## Ronda 40 — cuerpo con hombros/brazo/mano, patines y bocha imantada
+
+A pedido: que el jugador deje de leerse como un solo punto girando sobre la cabeza. Todo esto es
+**capa de dibujo pura** (`lib/game/draw.ts`) — cero cambios en `lib/engine`, la física/colisión
+sigue viendo exactamente el mismo círculo que antes. Verificado igual que siempre: compila limpio y
+pasa los 233 tests (encontré y arreglé un bug propio en el camino — ver abajo).
+
+- **Patines**: un par asomando bajo el cuerpo (look Funko: cuerpo grande, pies chicos), con zancada
+  alternada mientras se mueve. Sin estado nuevo en el motor: la fase sale de `performance.now()`
+  mezclado con la velocidad — **pero solo por encima de cierta velocidad**; parado no anima nada.
+- **Hombro → mano → palo**: antes el palo salía flotando del centro del cuerpo. Ahora hay un brazo
+  (color piel) desde el borde del cuerpo hasta una mano sobre el palo, y de ahí sale la pala.
+- **Mano izquierda o derecha, y revés/derecho, sin código nuevo para eso**: el lado del brazo sale
+  de reusar `sin(heading - stickAngle)` — el mismo cálculo que ya decidía de qué lado viene el
+  acompañamiento del golpe. Como el tiro (`kick()`) nunca estuvo atado a un lado fijo, esto ya
+  alcanza para que el brazo y el swing concuerden solos: si la bocha quedó a la izquierda heredé un
+  tiro de revés desde ese lado, a la derecha uno de derecho — no hizo falta enseñarle nada nuevo al
+  motor, solo dibujar lo que ya calculaba.
+- **Imán**: un resplandor celeste suave alrededor de la bocha mientras `puck.carrierId` existe, para
+  que se lea pegada al palo en vez de apoyada.
+- **Bug propio encontrado y arreglado**: los patines animaban con el reloj real incluso con el
+  jugador parado quieto, lo que rompía el test `dibujo: el pelo es estable...` (que exige que dos
+  cuadros del mismo jugador quieto salgan byte-a-byte idénticos). Se corrigió gateando toda la
+  animación por velocidad — de paso, mejor UX: sin jitter de pies en reposo.
+
+**Archivos tocados**: solo `lib/game/draw.ts`.
+
+## Valoración como juego arcade
+
+Pedido explícito: opinar como alguien que conoce el género, no solo listar lo que se hizo. Esto es
+una lectura de todo el código a lo largo de esta sesión (motor, IA, audio, HUD), no de haberlo
+jugado con las manos (ver "Estado de verificación") — la opinión sobre **sensación** de juego tiene
+ese límite y hay que tomarla con esa reserva.
+
+**Lo que está realmente bien, para el estándar del género:**
+- **La energía como límite del supertiro, no un cooldown de reloj**: gastás estamina de verdad
+  acelerando, no por existir — así que jugar "a lo loco" te cansa y un supertiro cuesta la mitad del
+  tanque. Es una decisión de diseño más fina que la de la mayoría de los arcades de este tamaño, que
+  suelen usar una barra que se llena sola con el tiempo.
+- **El combo de 3 toques (ataque) y 3 despejes (defensa) da un ritmo de "arma la jugada" real**, sin
+  ser un QTE ni un minijuego aparte — vive en la física normal.
+- **Dos esquemas de control pensados de verdad** (honda tipo Angry Birds vs. botones arcade clásico)
+  con el mismo motor de tiro/pase abajo — no es un reskin, son dos formas distintas de razonar la
+  misma acción, y las dos tienen ayuda de puntería (`assistAim`) calibrada.
+- **El público reacciona con capas de audio que se mezclan según la excitación del partido**
+  (`crowd-mix.ts`), no un loop fijo — para un juego que cabe en un solo HTML es un nivel de
+  producción de sonido poco común.
+- **El sistema de faltas es simétrico y matemático** (impacto ≥ umbral + quién puso el cierre), no
+  "el rival nunca comete falta" como en tantos arcades deportivos baratos.
+
+**Lo que lo frena, en orden de impacto:**
+1. **No hay un segundo jugador humano.** Es la ausencia más grande para el género: los clásicos de
+   arcade deportivo (NHL Arcade, Sensible Soccer, Rocket League en su núcleo) viven y mueren por el
+   1v1 en el sillón. Hoy es un solo humano contra IA, siempre — ni local de a dos ni online. Es la
+   mejora de mayor impacto si el objetivo es "un lujo arcade" de verdad, y probablemente la más cara
+   de construir (necesita un segundo esquema de entrada completo, o red).
+2. **La Copa es un bracket fijo de 4 equipos.** Como metajuego de "una sesión" está bien, pero no
+   hay progresión de más largo aliento (liga, más equipos, desbloqueables más allá del entrenamiento)
+   que te haga volver mañana. Ya está anotado en "Pendiente".
+3. **"Banda de la galería" sin hacer** — hoy la ambientación es multitud + tambores de estadio, pero
+   falta la música/banda propiamente dicha que le daría identidad sonora al arranque de cada
+   partido, no solo al ambiente.
+4. **Vista de penal sin cámara dedicada** (la idea "tipo Duck Hunt" que quedó en el pendiente): un
+   penal usa el mismo gesto que un tiro cualquiera. En un juego donde el penal ya es un momento
+   dramático (mano a mano, mismo mecanismo que la falta de 3), una cámara/interfaz propia para ese
+   momento sería la clase de detalle que separa "bueno" de "de lujo".
+5. **Todo lo visual de esta sesión (cuerpo, patines, brazo, imán, botones NES) nunca se vio en una
+   pantalla real** — compila y pasa tests, pero "se siente bien" es un juicio que falta validar con
+   las manos. Antes de pulir más, jugar.
+
+**Comparado con qué**: como base técnica (motor determinista, tests de física reales, IA con
+dificultad por skill, sonido dinámico) está por encima de la mayoría de los juegos deportivos
+arcade hechos para web — ahí es sólido de verdad. Como experiencia completa de arcade "de lujo" le
+falta lo que más engancha del género: jugar contra alguien al lado, y una razón para volver mañana
+más allá de mejorar el propio puntaje. Si tuviera que elegir UNA cosa para la próxima ronda, sería
+el punto 1.
+
 ## Cómo se juega
+
+Dos esquemas de control, elegibles en Ajustes (`Settings.controlScheme`, por defecto "honda"):
+
+**Honda (Angry Birds)** — el de siempre, rediseñado en esta ronda:
 
 | Dedo | Qué hace |
 | --- | --- |
 | **Izquierdo** (mitad izquierda de la pantalla) | Joystick flotante: nace donde tocás y mueve al jugador que lleva el puck. **Un toque rápido sobre un compañero le pasa a él** (pase de un dedo: no hace falta el otro pulgar). |
-| **Derecho** (mitad derecha) | Un deslizamiento (*flick*) pasa o tira. La **dirección** del deslizamiento es la del pase; la **velocidad** es la potencia (roce suave = pase, latigazo = tiro). Un **toque** suelto es pase automático al mejor compañero. |
+| **Derecho** (mitad derecha) | Como una honda: tocás y **estirás lejos** de hacia dónde querés tirar, soltás y sale para el lado **contrario** — no hay que deslizar HACIA el objetivo. Cuánto estiraste es la potencia (poco = pase, bien estirado = tiro fuerte). Un **toque** suelto (sin estirar) es pase automático al mejor compañero. |
 
+- **Bug real y grave, encontrado insistiendo — "mover y tirar juntos no andaba"**: tenía razón, y no
+  era un problema de su teléfono. El código tenía un pellizco de dos dedos para hacer zoom con la
+  cámara — pero se disparaba apenas tocaba un SEGUNDO dedo la pantalla, sin importar la intención. Como
+  el control de honda NECESITA los dos pulgares a la vez (uno mueve, el otro tira), cada vez que se
+  intentaba usar los dos juntos, el pellizco cancelaba el joystick del primero y nunca llegaba a
+  registrar el tiro del segundo. Mi primera respuesta (simular la lógica pura de `input.ts`) no lo
+  encontró porque el bug vivía una capa más arriba, en cómo `match.ts` conecta los eventos táctiles del
+  navegador — ahí es donde hacía falta mirar. Se sacó el pellizco entero: el botón de vista (SEG/TOT/3/4)
+  ya cubre "ver más cancha" sin ese riesgo.
+- **Se rediseñó el gesto entero en esta ronda**: antes había que deslizar el dedo HACIA donde se quería
+  tirar, midiendo la VELOCIDAD de salida (con una ventana de tiempo). Eso se sacó por completo: ahora es
+  puramente estirar-y-soltar, la potencia depende de cuánto se estiró (no de qué tan rápido), y la
+  dirección es la opuesta al estirón — como una honda de verdad. Mientras se sostiene el dedo se ven DOS
+  líneas: una punteada blanca (la banda, de dónde tocaste a dónde estiraste) y la de tiro de siempre
+  (verde a compañero, amarilla a portería), ahora apuntando para el lado correcto.
+- **El supertiro se ve venir, en los dos esquemas**: confirmé con números que un estirón/carga a fondo
+  SÍ llega a velocidad de supertiro (30 m/s, por encima del umbral de 24 — antes de tocar nada lo revisé
+  en `constants.ts`, no lo asumí). Le sumé una señal visual que faltaba: la línea de tiro de la honda (y
+  el relleno del botón TIRO en el esquema de botones) se ponen **naranjas** apenas el estirón/carga
+  alcanza el punto donde el tiro ya califica como supertiro — antes solo se sabía después de soltar, ya
+  tarde para corregir. El umbral se calcula solo a partir de `STAMINA.superShotMinSpeed` y
+  `powerFromFlick()`, no es un número suelto: si cualquiera de las dos cambia, la señal se recalcula sola.
 - **Pase de un dedo**: un toque rápido (corto, sin arrastrar) sobre un compañero —o sobre su flecha de borde si
   está fuera de cuadro— le pasa a ESE compañero, con cualquiera de los dos dedos. El toque del dedo izquierdo
   que no cae sobre nadie no hace nada (así un toquecito para arrancar no regala la pelota); el toque suelto
   del dedo derecho conserva su pase automático al mejor. Si el jugador más cercano al toque es un rival, no se
   pasa (`teammateAtPoint()` en `aim.ts`). La zona tocable mide al menos ~40 px de radio aunque se vea chico.
   El pase va DIRECTO al elegido (adelantándose a donde va), sin que la ayuda de puntería lo cambie por otro.
+
+**Botones (arcade clásico)** — nuevo, a pedido:
+
+| Control | Qué hace |
+| --- | --- |
+| **Cualquier dedo, en cualquier lugar** | Stick de movimiento (no hay más zona de acción — toda la pantalla mueve). |
+| **Botón PASE** (círculo verde, abajo a la derecha) | Mantenido: carga potencia (0 a 1 en ~1.1s, se ve en el relleno del botón). Soltar pasa al mejor compañero, a 0.7x-1.3x la velocidad automática según cuánto se cargó. |
+| **Botón TIRO** (círculo amarillo, al lado) | Igual, pero tira hacia donde MIRA el jugador (no hay gesto de apuntado en este esquema), con la misma escala de potencia que un estirón de la honda. |
+
+- Los botones son elementos reales (no dibujados en el canvas) — no los pude ver renderizados en este
+  entorno (no hay navegador; ver "Estado de verificación"), solo confirmé que compilan y no rompen nada.
+- Son dos esquemas de verdad separados: cambiar de uno a otro en Ajustes no toca el motor de tiro/pase
+  (`kick()`, `assistAim()`, `passSpeedFor()`) — los dos convergen en el mismo lugar (`applyAction()` en
+  `match.ts`), solo cambia cómo se arma el gesto.
 - Cuando un pase sale, el control salta al receptor y **se queda ahí mientras la pelota vuela**
   (`lockReceiver()` en `match.ts`; se suelta cuando alguien agarra la pelota o a los 2.2 s). Antes se
   reasignaba al compañero más cercano a donde estará la pelota, que en un pase largo solía ser otro.
-- Mientras arrastrás el dedo derecho se dibuja la trayectoria: verde si apunta a un compañero, amarilla si va a portería.
 - En escritorio: **WASD o flechas mueven** (independiente del mouse), el mouse (en toda la pantalla, ya
   no solo la mitad derecha) sigue sirviendo para el flick de pase/tiro, y **Espacio** es pase automático.
   `Esc` pausa.
@@ -31,10 +216,19 @@ eliminación directa a 4 equipos.
   equipo humano no hizo su primera acción, hay un hint chico abajo de la pantalla recordando el control.
 - **La app SIEMPRE abre en el demo** (IA vs IA); tocar la pantalla o apretar una tecla lo corta y lleva al menú.
 - Si girás el teléfono a vertical el partido se congela y pide girar: la pista es horizontal.
-- Ajustes: modo zurdo, sonido, nivel del rival (fácil / normal / difícil) y duración (1, 2, 3 o 5 min).
+- Ajustes: esquema de control (honda / botones), modo zurdo, sonido, nivel del rival (fácil / normal /
+  difícil) y duración (1, 2, 3 o 5 min).
 
 ### Reglas y física
 
+- **El palo acompaña el golpe, no empuja de frente**: investigué la técnica real antes de tocar nada
+  (varias fuentes coinciden: la bola se juega ligeramente atrás y al costado del cuerpo, y el jugador
+  gira tronco y hombros acompañando la dirección del tiro — no hay una "técnica de empuje recto" en
+  hockey de verdad). El tiro en sí sigue siendo instantáneo en la física (no hay un estado de "cargando"
+  antes de patear), pero el palo ahora tiene un **seguimiento visual después del golpe**: pasa de largo
+  el ángulo del tiro un instante y se asienta, como el *follow-through* de un golpe real — reusando
+  `pickupCooldown` (que ya existe, cuenta para abajo después de patear) para la animación, sin agregar
+  ningún estado nuevo al motor.
 - **Patinadores sin casco, arquero con casco.** Es hockey sobre patines, no hielo: los jugadores de línea
   van con el pelo al aire (visto desde arriba); el arquero es el único con casco, rejilla y hombreras.
 - **Crease.** Ningún patinador puede pararse dentro de un semicírculo de 1.75 m frente a cada portería
@@ -168,9 +362,22 @@ eliminación directa a 4 equipos.
   de "pantallazo" que ya tenían el gol y la falta.
 - **Siempre con el tanque lleno**: `awardPenalty()` le resetea la energía al tirador a 100 — así el
   penal siempre puede ser un supertiro de verdad, sin que el cansancio del partido (o de intentos
-  anteriores, en la tanda de la Copa) se lo impida. La física del arquero ya exige un tiro fuerte y
-  bien colocado para entrar (ver "portero: ataja lo de frente y lo flojo" en `possession.test.ts`), así
-  que no hizo falta forzar nada más: un supertiro de verdad ya es lo que hace falta para convertir.
+  anteriores, en la tanda de la Copa) se lo impida.
+- **Bug real, encontrado jugando de verdad**: "los penales nunca son goles" — cierto, y no era de
+  puntería. Simulé cientos de intentos (`node` directo contra el motor compilado, no solo tests) y until
+  un supertiro bien colocado a la esquina (0.9m del centro) daba **0% de goles**. La causa: el arquero
+  vive con un `standoff` (se adelanta de la línea para "cerrarle el ángulo" al atacante, como un
+  arquero de verdad en juego abierto) — pero a los 7.4m fijos del penal, ese mismo adelanto alcanza
+  para tapar CASI TODO el arco sin necesitar reaccionar ni moverse un centímetro. En un penal real, el
+  arquero tiene que quedarse parado en la línea hasta que se patea — nuestro arquero no lo sabía.
+  Ahora `World.penaltyActive` se lo dice: mientras dura el penal, `updateGoalies()` fuerza el
+  `standoff` al radio del propio arquero (el dorso toca la línea, no el centro — poner el centro
+  justo en la línea lo hacía solaparse con el arco y la física lo empujaba sola, otro bug menor en
+  el camino) en vez de adelantarse. La bandera se apaga sola en el próximo saque normal.
+  **Resultado, con el mismo supertiro a la esquina: 70-100% de goles.** Un tiro al medio del arco
+  sigue atajado siempre — no se volvió gratis, solo dejó de ser imposible. 3 tests nuevos en
+  `possession.test.ts` blindan esto (el arquero no se adelanta durante el penal, la esquina entra la
+  mayoría de las veces, el medio sigue atajado siempre).
 
 ### Posesión: al que le hacen el gol, sale con la pelota
 
@@ -188,6 +395,20 @@ eliminación directa a 4 equipos.
   Antes estaban abajo a la izquierda: tapaban jugadores y quedaban justo donde descansa el pulgar del
   joystick flotante (un toque de más = pausa). `hudAvoidRects()` en `cues.ts` conoce la ubicación de la
   placa y de los botones para que las flechas de borde no los pisen.
+- **Bug real, reportado como "no veo el botón de vista"**: hice el cálculo con los anchos reales del
+  CSS (hasta 5 botones de 46px + la placa del marcador, ambos en la esquina superior) y en pantallas
+  angostas se llegan a tocar por unos pocos píxeles — el botón de vista, en el medio de la fila, es el
+  más fácil de terminar tapado o cortado. No pude reproducirlo exacto (no tengo cómo ver el DOM real
+  desde acá, solo lo que dibuja el canvas), así que en vez de correr el margen until un número que
+  funcione en ESTE caso, hice que la fila **nunca pueda superponerse**: `flex-wrap` + un ancho máximo
+  — si no entra una fila entera, pasa el botón que sobra a una segunda fila, abajo de la primera, en
+  vez de superponerse a la placa. Sigue sin verificar con un DOM real.
+- **Ajustes de control desde la pausa**: botón "⚙️ Ajustes de control" en el menú de pausa — antes
+  solo se podían cambiar desde la pantalla de Equipos y ajustes, fuera del partido. Diestro/zurdo se
+  aplica EN VIVO (`match.setLeftHanded()`, no hace falta reiniciar). Honda/botones en cambio SÍ
+  reinicia el partido — avisado con un diálogo antes de aplicar: el esquema de botones tiene sus
+  propios botones armados en el DOM una sola vez al montar el partido, no hay forma de
+  aparecerlos/sacarlos en vivo sin volver a armar toda la pantalla.
 - **Combo y energía también se sienten en el cuerpo del jugador**, no solo en el HUD: el que arma el
   combo (portador con `attackCombo` de su lado, o el arquero con `defCombo` armado en defensa) muestra
   un aro que crece y late con los toques; y cualquier patinador cansado se ve más apagado — el color de
@@ -203,7 +424,13 @@ eliminación directa a 4 equipos.
 - `GOL` o `GOLAZO` aparece en la fila chica de la placa (donde van las faltas) — nunca texto grande en
   el centro de la pista. Al terminar el partido, dice `FIN` ahí mismo.
 - Pantallazo del color de quien anotó (el de toda la pantalla, aparte de la placa — se mantiene).
-- Confeti disparado desde la boca de la portería.
+- Confeti disparado desde la boca de la portería, en cada gol (no solo el del combo).
+- **Festejo de partido ganado**: un estallido de confeti más grande, aparte del de cada gol — desde
+  arriba de la pantalla, con los colores del equipo humano, cuando el partido termina ganado (no en el
+  demo ni en entrenamiento, ahí no hay "ganar" real).
+- **Banderas en la tribuna**: la tribuna de puntitos de colores (`drawCrowdStands`) ahora tiene una
+  fracción chica (10%) de esos puntos reemplazados por el emoji de bandera de cada selección (los
+  mismos `crests` del marcador) — no todos, para no recargar la vista.
 - Replay de ~2 s en cámara lenta de la jugada que terminó en gol, con los mismos gráficos del partido
   (no una versión simplificada), durante la pausa de festejo.
 
@@ -220,11 +447,31 @@ eliminación directa a 4 equipos.
 - Los nombres de la plantilla son apodos ficticios (Matador, Gaucho, Azzurro...), no jugadores reales.
 - Categoría (`category`: mixto/masculino/femenino) es una etiqueta editable por equipo, no cambia nada
   del motor ni del balance.
+- **Camiseta + pantalón, no un solo color**: `Team.pantsColor` (opcional, nuevo) — se ve como una banda
+  en la parte de abajo del cuerpo, recortada al mismo círculo. Bug real encontrado: Chile tenía el AZUL
+  como color PRINCIPAL (tenía que ser rojo, con el pantalón azul); se corrigió junto con España (roja,
+  pantalón amarillo — ya estaba bien de camiseta, le faltaba el pantalón). Sumé pantalón también a
+  Argentina (celeste/negro), Brasil (amarillo/azul) y Alemania (blanco/negro), bastante conocidos; el
+  resto de las selecciones se dejaron sin este segundo color por no tener la certeza de cuál es —
+  mejor sin dato que con uno inventado.
 
 ### Público de las gradas (audio)
 
 Grabaciones reales de estadio, no síntesis (decisión de la Ronda 23: para el público las muestras suenan
 mucho más reales; la síntesis se reserva para efectos y, más adelante, la banda).
+
+- **Bug real, reportado jugando: la música y el silbato real nunca se escuchaban, solo lo sintetizado.**
+  La pista: si un sonido sintetizado (osciladores puros) SÍ se oye pero uno grabado NO, el AudioContext
+  funciona bien — el problema tiene que estar en TRAER el archivo, no en reproducirlo. En el build de un
+  solo archivo (`juego.html`) el audio va incrustado como `data:` URI en base64, y se estaba trayendo con
+  `fetch()` — que sobre una `data:` URI tiene antecedentes reales de fallar en navegadores/WebViews
+  móviles (encontré casos documentados, aunque no pude confirmar que sea exactamente esto sin probarlo en
+  el celular). Se cambió a `fetchAudioBytes()` (`sfx.ts`): si la URL empieza con `data:`, decodifica el
+  base64 directo con `atob()`, sin pasar por `fetch()` para nada; si es una ruta real (`/audio/...`, el
+  build de Next), sigue usando `fetch()` normal. 3 tests nuevos (`sfx.test.ts`) prueban el decodificado
+  byte a byte, el caso de un `data:` URI sin base64 (rechaza, no devuelve basura), y que una URL normal
+  siga yendo por `fetch()`. **Esto queda para que Ignacio lo confirme jugando de nuevo** — es la hipótesis
+  más probable, no una certeza verificada.
 
 - **Capas** (`lib/game/crowd.ts`, motor; `lib/game/crowd-mix.ts`, lógica pura y testeada): dos
   **murmullos** de fondo en bucle (siempre suenan), un bucle de **público entusiasmado** que entra al subir
@@ -234,6 +481,19 @@ mucho más reales; la síntesis se reserva para efectos y, más adelante, la ban
   de una portería, últimos 10 s, muerte súbita, combo armado. Los eventos suman un "golpe" que decae solo
   (`reactionFor()`): el gol propio se festeja más que el del rival, el golazo más que el gol común.
 - **Silbato**: falta, penal, saque y final bajan al público un instante para que el silbato se escuche.
+- **Música de fondo (`crowd-fiesta`)**: casi 80 segundos, no un recorte corto. La primera versión la
+  cortó a 6s pensando que era "otro efecto más" — Ignacio la había probado ya y avisó que sonaba mucho
+  mejor entera ("funcionaba genial"), un loop tan corto se siente repetitivo enseguida en música de
+  fondo. Quedó recuperada del zip del proyecto (el original de 82s/960KB nunca se subió suelto a este
+  entorno, pero seguía intacto dentro del zip ya subido) y reprocesada igual que el resto (nivelada,
+  con fundidos, límite de pico) — 622 KB a 64kbps mono, con su propio tope en el test de assets (750KB,
+  contra 200KB del resto: son las dos pistas pensadas para no repetirse, el resto son efectos cortos).
+- **Banda de la galería (`crowd-band`), lo que faltaba en Pendiente, ya no falta**: 77 segundos de
+  batucada real (bombo, redoblante) — recorte de 1:41 en adelante del mismo archivo que ya tenía
+  procesado como `crowd-victory` (Ignacio indicó el corte exacto). No suena todo el partido como la
+  música de fondo: es una capa aparte que **solo entra en el pico de tensión** (`bandGain()` en
+  `crowd-mix.ts`, pasado ~65% de entusiasmo — últimos segundos, muerte súbita, combo armado), arriba
+  del bucle de "entusiasmado". Mismo tope de 750KB que la música de fondo, por la misma razón.
 - **Paneo**: la ovación llega del lado de la portería donde entró el gol, según hacia dónde mira la cámara
   (`panFor()`); la reacción corta, del lado de la pelota.
 - **Bucles sin empalme grabado**: cada vuelta se solapa con la anterior 1.4 s con un fundido en cruz de
@@ -308,15 +568,44 @@ mucho más reales; la síntesis se reserva para efectos y, más adelante, la ban
 
 ### Modo entrenamiento
 
-- Práctica de tiros libre, sin equipo rival (`MatchOptions.training`): plantilla de 1, la IA no se
-  llama para nada — el otro lado queda quieto, no estorba.
+- **Pista elegible**: madera, sintético o cemento (`segmented<Surface>`), antes de arrancar — faltaba
+  del todo, ahora está arriba de todo en la pantalla de entrenamiento. Por defecto arranca en la pista
+  de localía del equipo que tengas elegido en Ajustes.
+- **Ahora con compañeros de verdad**: antes era plantilla de 1 (vos solo). Ahora es el equipo
+  completo (4) de tu lado — `TeamAI.update()` ahora acepta qué lados mover (`sides`, nuevo parámetro,
+  por defecto los dos); en entrenamiento se le pasa `[0]`: tus compañeros se mueven y posicionan solos
+  como en un partido de verdad, el lado rival se queda quieto donde arrancó (no hay IA de rival de
+  verdad en entrenamiento, a propósito — sigue siendo práctica libre, no un partido).
+- Práctica de tiros libre, sin equipo rival (`MatchOptions.training`) — el otro lado queda quieto,
+  no estorba.
 - 3 configuraciones de arquero, elegibles antes de empezar: **arquero local**, **arquero visita**, o
   **sin arquero**. El motor ya soporta arquero por lado (`WorldConfig.goalies: [boolean, boolean]`,
   retrocompatible con el `boolean` de siempre — ambos o ninguno).
-- **Se desbloquea ganando la Copa** (`saved.cup?.championId`), o con un atajo secreto desde la pantalla
-  de selección de equipos: en escritorio, mantener Shift y tipear `0-1-7-8-9` (se lee de la tecla física, `e.code`: con Shift, `e.key` es "!", ")"…, y antes el código **nunca** coincidía); en celular, mantener
-  apretado el título de texto "PARTIDO" (no es un logo) de esa misma pantalla 6 segundos. Los dos avisan con un diálogo
-  ("¡Modo entrenamiento desbloqueado!") — antes lo hacían en silencio.
+- **Se desbloquea ganando la Copa** (`saved.cup?.championId`), o con un atajo secreto: en escritorio,
+  mantener Shift y tipear `0-1-7-8-9` desde la pantalla de equipos (se lee de la tecla física, `e.code`:
+  con Shift, `e.key` es "!", ")"…); en celular, **tocar el logo del menú principal 7 veces seguidas**
+  (menos de 1.5s entre toque y toque), como el "modo desarrollador" de Android — con una cuenta ("3
+  toques más...") que aparece debajo del logo a partir del 3er toque. Los dos avisan con un diálogo.
+- **El de celular pasó por DOS diseños que no funcionaban antes de este** — vale la pena dejarlo
+  escrito para no repetir el error: primero mantener apretado 6s con un `setTimeout` (se perdía si el
+  navegador reemplazaba el elemento a mitad de camino — pasa con cualquier re-render, manda
+  `pointercancel`); después medir la duración real en vez del timer (mejor, pero seguía siendo un
+  gesto sostenido de 6 segundos enteros, con el sistema operativo de por medio todo ese tiempo). El
+  de toques repetidos es categóricamente más simple: cada toque es un evento chico y aislado, nada
+  que sostener, nada que un re-render intermedio pueda arruinar a mitad de camino.
+- **El logo del menú es la insignia real del juego** (arte de Ignacio, la del trofeo con los dos
+  personajes y las banderas) — no un SVG simple de relleno que yo había dibujado antes. Se corrigió DOS
+  veces: primero se reemplazó el rayo genérico por esta insignia, y encima se encontró que el ícono
+  "maskable" (el que arma Android para el ícono adaptativo de la app instalada) tenía la insignia
+  achicada con mucho margen oscuro alrededor — Android le agrega su PROPIO marco redondeado encima de
+  eso, y el resultado era la insignia chica flotando dentro de un cuadrado, no un círculo limpio. Se
+  regeneraron los 4 archivos de ícono desde el original en alta resolución (2048×2048): los normales
+  tal cual, y el maskable agrandado 1.42x desde el centro antes de recortar, así el círculo se sale de
+  los 4 bordes y no queda margen visible. Hay que reinstalar la PWA para verlo (el navegador cachea el
+  ícono).
+- Al desbloquearse, quedan disponibles a la vez el entrenamiento libre (elegir arquero) y "Practicar
+  penales" (mano a mano contra el arquero rival, uno tras otro, siempre con el tanque lleno) — los dos
+  viven en la misma pantalla de entrenamiento, así que un solo desbloqueo alcanza para los dos.
 - Duración larga (10 min) pensada para practicar, no para competir; al terminar vuelve directo a elegir
   otra configuración, sin el diálogo de "¡GANASTE!/PERDISTE" (no tendría sentido, no hay rival).
 
@@ -435,6 +724,32 @@ y jugar unas partidas de verdad — Copa, demo, entrenamiento, un gol de combo �
 
 ## Pendiente
 
+- **Segundo jugador humano, en otro celular (Android/iPhone)**: la mejora de mayor impacto según la
+  valoración de arriba. Diseñada, no implementada — protocolo, arquitectura recomendada (relay
+  WebSocket + física autoritativa en un solo lado) y qué archivos tocaría, en
+  `docs/DEUDA-multijugador-2-dispositivos.txt`.
+- **Los 3 puntos de la ronda de análisis, hechos, con un hallazgo real en el camino**:
+  1. Hecho: la banda y la línea de tiro ahora parten del mismo origen (la posición actual del jugador
+     en pantalla) — ya no se desfasan si el jugador se mueve mientras se apunta.
+  2. Hecho: `SKATER.shotSideOffset` — la pelota sale corrida a un costado del cuerpo, no del centro
+     (mismo lado que ya elige el seguimiento visual del palo, para que las dos cosas concuerden).
+     **Encontré una interacción real en el camino**: el primer valor que probé (0.16m) volvía a tapar
+     el penal a la esquina (0% de goles otra vez) — el corrimiento lateral, sumado a lo ajustado que
+     ya está el margen del arquero parado en la línea, alcanzaba para devolver la pelota a su alcance.
+     Medí varios valores contra el motor real: hay un salto brusco entre 0.10 (sigue entrando bien) y
+     0.11 (vuelve a 0%) — no es un degradado suave, es un límite geométrico afilado. Se dejó en 0.08,
+     con margen real por debajo de ese límite, no pegado al borde. Test nuevo que blinda esto en
+     `possession.test.ts`.
+  3. Hecho: botón "🔄 Cambiar de jugador" en la barra del partido — pasa al siguiente compañero en
+     cancha. No reusa `receiverLock` (el mecanismo del pase en el aire) a propósito: ese se suelta
+     apenas alguien agarra la pelota, y este botón tiene que aguantar todo el juego abierto. Sin
+     verificar con DOM real (como el resto de los controles internos de `match.ts`).
+- **Vista tipo Duck Hunt para apuntar penales de cerca**: idea de Ignacio para hacer más preciso apuntar
+  a una esquina exacta durante un penal (hoy usa el mismo gesto que un tiro cualquiera). Se propuso como
+  solución a "los penales nunca son goles" — esa parte ya se resolvió de raíz (era un bug de física del
+  arquero, no de puntería, ver "Penal" en Reglas y física), así que esto ya no es urgente. Sigue siendo
+  una buena mejora de precisión si se quiere retomar: una cámara/interfaz aparte, encarada al arco, solo
+  para el momento del penal.
 - **Pase de un dedo**: hecho (toque rápido sobre el compañero; ver "Cómo se juega"). Falta probarlo con
   el pulgar real en un teléfono: el umbral de "toque" (`TAP_MAX_DIST` 5 % de la altura, `TAP_MAX_TIME`
   0.3 s en `input.ts`) y la zona tocable (~40 px) son valores razonables, no ajustados jugando. Si un
@@ -467,4 +782,4 @@ y jugar unas partidas de verdad — Copa, demo, entrenamiento, un gol de combo �
 - **Sin torneos de más de 4 equipos.** La Copa es a bracket fijo de 4 (2 semis + final); no hay liga,
   grupos, ni un número distinto de equipos todavía.
 - `app/globals.css` se podría simplificar más (solo lo importa `app/layout.tsx`; el juego trae sus
-  propios estilos) y `app/lab/` sigue vacío — ninguno de los dos rompe nada, quedaron sin tocar.
+  propios estilos) — sin tocar. `app/lab/` ya se eliminó (Ronda 39, estaba vacío).

@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { SKATER, MATCH, kick, kickoff, setInput, createWorld, stepWorld, FIXED_DT } from "../../lib/engine"
+import { SKATER, MATCH, GOALIE, kick, kickoff, setInput, createWorld, stepWorld, FIXED_DT, awardPenalty } from "../../lib/engine"
 import { GOALS, RINK, cleanWorld, lcg, makeWorld, parkOthers, place, run, shootPuck } from "./helpers"
 
 test("un puck suelto cerca se recoge y queda pegado al palo mientras te mueves", () => {
@@ -203,4 +203,74 @@ test("kickoff restaura posiciones sin tocar marcador", () => {
   assert.deepEqual(w.score, [2, 1])
   assert.ok(w.skaters[0].x < RINK.length / 2)
   void stepWorld; void FIXED_DT
+})
+
+// ---------- penal: el arquero se queda en la línea (no le cierra el ángulo al tirador) ----------
+
+test("penal: el arquero NO se adelanta a cerrar el ángulo (se queda con el dorso en la línea, como en el reglamento real)", () => {
+  const w = createWorld({ teamSize: 1 })
+  awardPenalty(w, 0)
+  const g = GOALS[1]
+  // El CENTRO del arquero no va justo en la línea (se superpondría con el propio arco); va a un
+  // radio de distancia, así el dorso le toca la línea. Eso es "en la línea" para este modelo.
+  const expectedX = g.lineX - g.dir * GOALIE.radius
+  assert.ok(Math.abs(w.goalies[1].x - expectedX) < 0.05, `recién otorgado el penal: x=${w.goalies[1].x.toFixed(2)} (esperaba ~${expectedX.toFixed(2)})`)
+  // Corre bastante tiempo de juego SIN que se patee todavía: en el juego normal esto lo haría
+  // adelantarse solo (targetStandoff crece con `closeness`) — durante un penal no debería moverse.
+  for (let i = 0; i < 60; i++) stepWorld(w, FIXED_DT)
+  assert.ok(Math.abs(w.goalies[1].x - expectedX) < 0.05, `se adelantó de la línea durante el penal: x=${w.goalies[1].x.toFixed(2)} (esperaba ~${expectedX.toFixed(2)})`)
+})
+
+test("penal: un supertiro bien colocado a la esquina AHORA SÍ le gana al arquero la mayoría de las veces", () => {
+  const g = GOALS[1]
+  let goals = 0
+  const n = 20
+  for (let i = 0; i < n; i++) {
+    const w = createWorld({ teamSize: 1 })
+    awardPenalty(w, 0)
+    const shooter = w.skaters.find((s) => s.id === "L1")!
+    const ty = g.cy + (i % 2 === 0 ? 0.9 : -0.9) // esquina de verdad, no el palo
+    const angle = Math.atan2(ty - shooter.y, g.lineX - shooter.x)
+    kick(w, shooter.id, angle, 30) // supertiro
+    for (let t = 0; t < 90 && w.phase === "play"; t++) stepWorld(w, FIXED_DT)
+    if (w.phase === "goal") goals++
+  }
+  assert.ok(goals >= n * 0.7, `supertiro a la esquina en el penal: ${goals}/${n} goles (esperaba al menos 70%)`)
+})
+
+test("penal: un tiro al medio, aunque sea supertiro, lo sigue atajando siempre (no se volvió gratis)", () => {
+  const g = GOALS[1]
+  let goals = 0
+  const n = 10
+  for (let i = 0; i < n; i++) {
+    const w = createWorld({ teamSize: 1 })
+    awardPenalty(w, 0)
+    const shooter = w.skaters.find((s) => s.id === "L1")!
+    const angle = Math.atan2(g.cy - shooter.y, g.lineX - shooter.x)
+    kick(w, shooter.id, angle, 30)
+    for (let t = 0; t < 90 && w.phase === "play"; t++) stepWorld(w, FIXED_DT)
+    if (w.phase === "goal") goals++
+  }
+  assert.equal(goals, 0, "un supertiro al medio del arco debería seguir atajado siempre")
+})
+
+test("el corrimiento del tiro a un costado (shotSideOffset) no le vuelve a tapar el penal al arquero", () => {
+  // Regresión real: un shotSideOffset de 0.16 (probado primero) hacía que el penal a la esquina
+  // volviera a dar 0% de goles — el corrimiento lateral, sumado a lo ajustado que ya está el margen
+  // del arquero parado en la línea, alcanzaba para devolver la pelota al alcance del arquero según
+  // de qué lado tocara. 0.08 (el valor final) tiene margen real por debajo del límite donde se rompe.
+  const g = GOALS[1]
+  let goals = 0
+  const n = 20
+  for (let i = 0; i < n; i++) {
+    const w = createWorld({ teamSize: 1 })
+    awardPenalty(w, 0)
+    const shooter = w.skaters.find((s) => s.id === "L1")!
+    const ty = g.cy + (i % 2 === 0 ? 0.9 : -0.9)
+    const angle = Math.atan2(ty - shooter.y, g.lineX - shooter.x)
+    kick(w, shooter.id, angle, 30)
+    for (let t = 0; t < 90 && w.phase === "play"; t++) stepWorld(w, FIXED_DT)
+    if (w.phase === "goal") goals++
+  }
+  assert.ok(goals >= n * 0.7, `con shotSideOffset puesto, esquina en el penal: ${goals}/${n} goles (esperaba al menos 70%)`)
 })

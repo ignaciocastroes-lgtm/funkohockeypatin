@@ -23,6 +23,7 @@ export const CROWD = {
   /** Techos de volumen por capa (0..1, antes del volumen general del público). */
   bedMax: 0.8,
   energyMax: 0.6,
+  bandMax: 0.55,
   roarMax: 0.72,
   reactMax: 0.7,
   /** Techo de la música de fondo (fiesta de las gradas) — es la única capa con control propio de
@@ -68,6 +69,14 @@ export function bedGain(e: number): number {
 export function energyGain(e: number): number {
   const x = clamp01((e - 0.35) / 0.65)
   return CROWD.energyMax * Math.pow(x, 1.4)
+}
+
+/** Volumen de la banda (batucada real: bombo, redoblante) — solo en el pico de tensión, pasado ~65%
+ *  de entusiasmo (últimos segundos, muerte súbita, combo armado cerca) — no suena en un partido
+ *  tranquilo, es la escalada final arriba de "entusiasmado". */
+export function bandGain(e: number): number {
+  const x = clamp01((e - 0.65) / 0.35)
+  return CROWD.bandMax * Math.pow(x, 1.2)
 }
 
 /**

@@ -1,4 +1,4 @@
-import { CURVE, FIXED_DT, GOAL, GOALIE, MATCH, PUCK, RINK, RULES, SKATER, SKATER_KINDS, STAMINA, SUPER_SHOT_COST, SURFACES } from "./constants"
+import { CURVE, FIXED_DT, GOAL, GOALIE, MATCH, PUCK, PUCK_KINDS, RINK, RULES, SKATER, SKATER_KINDS, STAMINA, SUPER_SHOT_COST, SURFACES } from "./constants"
 import { boardContact, collectContacts, GOALS, type Contact } from "./geometry"
 import type { ComboState, GameEvent, Goalie, Puck, Side, Skater, SkaterKind, SubEntry, World, WorldConfig } from "./types"
 
@@ -75,6 +75,7 @@ function placeKickoff(w: World) {
     g.aimY = geom.cy
     g.reactTimer = 0
     g.wasIncoming = false
+    g.lastShotAngle = null
   }
   const p = w.puck
   p.x = L / 2; p.y = W / 2; p.vx = 0; p.vy = 0
@@ -86,6 +87,7 @@ function placeKickoff(w: World) {
   p.spin = 0
   w.attackCombo = null
   w.defCombo = null
+  w.penaltyActive = false
   if (w.nextKickoffSide !== null) {
     // Al que le hicieron el gol, sale con la pelota — no es un saque neutral.
     const side = w.nextKickoffSide
@@ -121,10 +123,15 @@ export function awardPenalty(w: World, side: Side) {
   // del partido, ni entre intentos de una misma tanda: así siempre puede ser un supertiro de verdad.
   for (const g of w.goalies) {
     const gg = GOALS[g.side]
-    g.x = gg.lineX - gg.dir * GOALIE.standoff
+    // En un penal de verdad el arquero tiene que quedarse PARADO EN LA LÍNEA hasta que se patea (no
+    // puede adelantarse a cerrar el ángulo, como sí hace en el juego normal). El cuerpo se para con
+    // el DORSO tocando la línea (no el centro exacto: eso lo hacía solaparse con el propio arco y la
+    // física lo empujaba sola, otro bug encontrado en el camino) — mismo standoff que usa
+    // `updateGoalies` cuando `penaltyActive`, para que no haya un salto en el primer paso.
+    g.x = gg.lineX - gg.dir * GOALIE.radius
     g.y = gg.cy
     g.vx = 0; g.vy = 0; g.px = g.x; g.py = g.y
-    g.aimY = gg.cy; g.reactTimer = 0; g.wasIncoming = false
+    g.aimY = gg.cy; g.reactTimer = 0; g.wasIncoming = false; g.lastShotAngle = null
   }
   const p = w.puck
   p.x = sx; p.y = geom.cy; p.vx = 0; p.vy = 0; p.px = p.x; p.py = p.y
@@ -133,6 +140,7 @@ export function awardPenalty(w: World, side: Side) {
   p.comboShot = false; p.spin = 0
   w.attackCombo = null; w.defCombo = null
   emit(w, { type: "penalty", side, shooterId: shooter.id })
+  w.penaltyActive = true
 }
 
 export function createWorld(cfg: WorldConfig = {}): World {
@@ -174,13 +182,14 @@ export function createWorld(cfg: WorldConfig = {}): World {
   }
   const goalies: Goalie[] = ([0, 1] as Side[])
     .filter((side) => goaliesBySide[side])
-    .map((side) => ({ side, x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0, radius: GOALIE.radius, aimY: 0, reactTimer: 0, wasIncoming: false }))
+    .map((side) => ({ side, x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0, radius: GOALIE.radius, aimY: 0, reactTimer: 0, wasIncoming: false, lastShotAngle: null }))
   const puck: Puck = {
     x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0,
     radius: PUCK.radius, carrierId: null, lastTouchId: null, lastTouchSide: null, comboShot: false, spin: 0,
   }
   const w: World = {
     surface: cfg.surface ?? "madera",
+    puckKind: cfg.puckKind ?? "normal",
     time: 0, steps: 0, clock: duration, phase: "play", phaseTimer: 0,
     score: [0, 0], skaters, goalies, puck, events: [],
     hasGoalies, teamSize, duration,
@@ -189,6 +198,7 @@ export function createWorld(cfg: WorldConfig = {}): World {
     attackCombo: null, defCombo: null,
     suddenDeath: false,
     nextKickoffSide: null,
+    penaltyActive: false,
   }
   placeKickoff(w)
   return w
@@ -222,7 +232,7 @@ export function kick(w: World, id: string, angle: number, speed: number): boolea
   const s = findSkater(w, id)
   const p = w.puck
   if (!s || p.carrierId !== id || w.phase !== "play") return false
-  let sp = clamp(speed, 0, SKATER.kickMaxSpeed)
+  let sp = clamp(speed, 0, SKATER.kickMaxSpeed * PUCK_KINDS[w.puckKind].maxSpeedMul)
   let superShot = false
 
   // Combo de ataque armado (3 toques) + este tiro va con fuerza real: es el golazo, no gasta energía.
@@ -243,8 +253,14 @@ export function kick(w: World, id: string, angle: number, speed: number): boolea
   const cx = Math.cos(angle)
   const cy = Math.sin(angle)
   const off = s.radius + p.radius + SKATER.stickReach
-  p.x = s.x + cx * off
-  p.y = s.y + cy * off
+  // La pelota NO sale del centro del cuerpo: en hockey de verdad se juega a un costado (el palo gira
+  // para pegarle, no empuja de frente — investigado antes de tocar esto). Mismo lado que ya usa el
+  // seguimiento visual del palo después del golpe (misma cuenta), para que las dos cosas concuerden.
+  const side = Math.sin(s.heading - angle) >= 0 ? 1 : -1
+  const perpX = -cy * side * SKATER.shotSideOffset
+  const perpY = cx * side * SKATER.shotSideOffset
+  p.x = s.x + cx * off + perpX
+  p.y = s.y + cy * off + perpY
   const bc = boardContact(p.x, p.y, p.radius)
   if (bc) { p.x += bc.nx * bc.pen; p.y += bc.ny * bc.pen }
   p.vx = cx * sp + s.vx * SKATER.kickInherit
@@ -477,9 +493,12 @@ function updateGoalies(w: World, dt: number) {
 
     // Profundidad: por defecto vive a `standoff` de la línea, pero sale a cerrar el ángulo
     // (como un portero de verdad) cuando el atacante se acerca, hasta `advanceMax` de más.
+    // EXCEPTO en un penal: ahí tiene que quedarse parado en la línea, como en el reglamento real
+    // (si no, esto mismo lo saca de la línea al toque siguiente, aunque `awardPenalty` ya lo haya
+    // puesto ahí — es la causa real de por qué los penales no entraban nunca).
     const distToLine = Math.abs(geom.lineX - p.x)
     const closeness = clamp(1 - distToLine / GOALIE.advanceRange, 0, 1)
-    const targetStandoff = GOALIE.standoff + closeness * GOALIE.advanceMax
+    const targetStandoff = w.penaltyActive ? GOALIE.radius : GOALIE.standoff + closeness * GOALIE.advanceMax
     const targetX = geom.lineX - geom.dir * targetStandoff
     const maxAdvStep = GOALIE.advanceSpeed * dt
     g.x += clamp(targetX - g.x, -maxAdvStep, maxAdvStep)
@@ -491,8 +510,20 @@ function updateGoalies(w: World, dt: number) {
     let seenY = Math.abs(denom) > 1e-6 ? p.y + (geom.cy - p.y) * clamp((g.x - p.x) / denom, 0, 1) : geom.cy
     // ...y cuando sale un disparo tarda un instante en reaccionar
     const incoming = p.vx * geom.dir > GOALIE.shotSpeed && !p.carrierId
-    if (incoming && !g.wasIncoming) g.reactTimer = GOALIE.reactionDelay
+    if (incoming && !g.wasIncoming) {
+      g.reactTimer = GOALIE.reactionDelay
+    } else if (incoming && g.wasIncoming && g.lastShotAngle !== null) {
+      // Desvío de golpe (poste, patinador) con el arquero YA alerta: no vuelve a reaccionar desde
+      // cero (eso sería el mismo retardo largo de un tiro nuevo), pero sí tarda un instante corto
+      // en volver a girar hacia la nueva trayectoria — antes esto no se detectaba, seguía apuntando
+      // adonde iba la bocha ANTES del desvío y por eso se colaba sin que el arquero llegara a girar.
+      const newAngle = Math.atan2(p.vy, p.vx)
+      if (Math.abs(angleDiff(g.lastShotAngle, newAngle)) > GOALIE.deflectionAngle) {
+        g.reactTimer = Math.max(g.reactTimer, GOALIE.deflectionDelay)
+      }
+    }
     g.wasIncoming = incoming
+    g.lastShotAngle = incoming ? Math.atan2(p.vy, p.vx) : null
     if (g.reactTimer > 0) g.reactTimer -= dt
     if (incoming && g.reactTimer <= 0) {
       const t = clamp((g.x - p.x) / p.vx, 0, 1.2)
@@ -751,17 +782,18 @@ function updatePuck(w: World, dt: number) {
 
   // 2) puck suelto: fricción
   const surf = SURFACES[w.surface]
+  const pk = PUCK_KINDS[w.puckKind]
   let speed = Math.hypot(p.vx, p.vy)
   if (speed > 0) {
-    const ns = Math.max(0, speed - (surf.puckDecel + surf.puckDrag * speed) * dt)
+    const ns = Math.max(0, speed - (surf.puckDecel + surf.puckDrag * speed) * pk.decelMul * dt)
     const k = ns / speed
     p.vx *= k; p.vy *= k
     speed = ns
   }
-  if (speed > PUCK.maxSpeed) {
-    const k = PUCK.maxSpeed / speed
+  if (speed > PUCK.maxSpeed * pk.maxSpeedMul) {
+    const k = (PUCK.maxSpeed * pk.maxSpeedMul) / speed
     p.vx *= k; p.vy *= k
-    speed = PUCK.maxSpeed
+    speed = PUCK.maxSpeed * pk.maxSpeedMul
   }
   // Efecto: curva la DIRECCIÓN del vuelo (no la velocidad), y se apaga con el tiempo — un tiro
   // largo termina enderezándose, no da una vuelta imposible.
@@ -793,7 +825,7 @@ function updatePuck(w: World, dt: number) {
         p.y += c.ny * c.pen
         const vn = p.vx * c.nx + p.vy * c.ny
         if (vn < 0) {
-          const e = c.kind === "board" ? PUCK.boardRestitution : PUCK.postRestitution
+          const e = Math.min(0.95, (c.kind === "board" ? PUCK.boardRestitution : PUCK.postRestitution) * pk.restitutionMul)
           p.vx -= (1 + e) * vn * c.nx
           p.vy -= (1 + e) * vn * c.ny
           if (-vn > 2) emit(w, { type: c.kind === "board" ? "board" : "post", speed: -vn })
@@ -803,6 +835,7 @@ function updatePuck(w: World, dt: number) {
 
     // porteros
     for (const g of w.goalies) {
+      const geom = GOALS[g.side]
       const min = g.radius + p.radius
       const dx = p.x - g.x
       const dy = p.y - g.y
@@ -829,10 +862,20 @@ function updatePuck(w: World, dt: number) {
           w.defCombo = null
           emit(w, { type: "save", speed: -vn, combo: true })
         } else {
-          const e = PUCK.goalieRestitution
+          const e = Math.min(0.95, PUCK.goalieRestitution * pk.restitutionMul)
           p.vx = g.vx + rvx - (1 + e) * vn * nx
           p.vy = g.vy + rvy - (1 + e) * vn * ny
-          if (-vn > 3) emit(w, { type: "save", speed: -vn })
+          // Despeje con el palo: un arquero de verdad no deja la bocha picando "a lo que caiga"
+          // contra el cuerpo — la saca de encima hacia el costado (nunca al medio, que sería
+          // regalarla de nuevo) y hacia afuera de su propio arco. Se suma al rebote elástico de
+          // arriba, con más fuerza cuanto más fuerte llegó el tiro.
+          if (-vn > 3) {
+            const clearSide = g.y >= geom.cy ? 1 : -1
+            const clearStrength = clamp(-vn / 14, 0.35, 1)
+            p.vx += -geom.dir * GOALIE.clearSpeed * 0.6 * clearStrength
+            p.vy += clearSide * GOALIE.clearSpeed * clearStrength
+            emit(w, { type: "save", speed: -vn })
+          }
         }
       }
     }
@@ -874,7 +917,7 @@ function updatePuck(w: World, dt: number) {
         p.y = s.y + ny * (min + 1e-4)
         const vn = rvx * nx + rvy * ny
         if (vn < 0) {
-          const e = PUCK.skaterRestitution
+          const e = Math.min(0.95, PUCK.skaterRestitution * pk.restitutionMul)
           p.vx = s.vx + rvx - (1 + e) * vn * nx
           p.vy = s.vy + rvy - (1 + e) * vn * ny
           p.lastTouchId = s.id
