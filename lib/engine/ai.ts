@@ -1,4 +1,4 @@
-import { RINK } from "./constants"
+import { RINK, STAMINA, SUPER_SHOT_COST } from "./constants"
 import { GOALS } from "./geometry"
 import { passSpeedFor } from "./aim"
 import { findSkater, kick, setInput, trySub } from "./world"
@@ -45,6 +45,37 @@ function distToSegment(px: number, py: number, ax: number, ay: number, bx: numbe
   return Math.hypot(px - (ax + dx * t), py - (ay + dy * t))
 }
 
+/**
+ * Identidad SIN posiciones fijas: no hay roles asignados a un jugador para siempre, hay una
+ * PREFERENCIA que la IA usa como desempate cuando dos patinadores están parecidos de cerca.
+ * Todos siguen pudiendo ser "último hombre" o pisar el área rival en la misma jugada — eso es
+ * a propósito (así juega el hockey sobre patines) — pero de listado el 0 tira más para atrás,
+ * el 1 pide la bola sin irse al fondo, y el 2/3 son quienes más pisan punta. El `kind` empuja
+ * en la misma dirección: pesado cierra, veloz persigue.
+ */
+function rosterIndex(id: string): number {
+  const m = id.match(/(\d+)$/)
+  return m ? parseInt(m[1], 10) - 1 : 0
+}
+
+/** Cuánto le gusta a este patinador ser el "último hombre" (más alto = más probable). */
+function lastManPull(s: Skater): number {
+  const idx = rosterIndex(s.id)
+  let pull = idx === 0 ? 3 : idx === 1 ? -1 : -0.5
+  if (s.kind === "pesado") pull += 1.5
+  else if (s.kind === "veloz") pull -= 1.2
+  return pull
+}
+
+/** Cuánto le gusta a este patinador salir a presionar al portador. */
+function chaserPull(s: Skater): number {
+  const idx = rosterIndex(s.id)
+  let pull = idx === 0 ? -0.6 : 0
+  if (s.kind === "veloz") pull += 1.6
+  else if (s.kind === "pesado") pull -= 0.8
+  return pull
+}
+
 export class TeamAI {
   private skill: [number, number]
   private rnd: () => number
@@ -70,7 +101,8 @@ export class TeamAI {
     const carrier = w.puck.carrierId ? findSkater(w, w.puck.carrierId) : undefined
     if (!carrier) for (const x of this.mem.values()) x.carryTime = 0
     // Cambio por cansancio: automático en cuanto hay alguien tirado y suplente fresco (tope: 3 por equipo).
-    for (const side of sides) trySub(w, side)
+    // Nunca al que tiene la bola, ni al que el humano está manejando ahora mismo.
+    for (const side of sides) trySub(w, side, humanId)
     for (const side of sides) this.updateSide(w, side, humanId, carrier, dt)
   }
 
@@ -103,7 +135,9 @@ export class TeamAI {
       const ty = mode === "defend" ? carrier!.y + carrier!.vy * 0.2 : p.y + p.vy * 0.3
       let best = Infinity
       for (const s of team) {
-        const d = Math.hypot(s.x - tx, s.y - ty) - (s.id === humanId ? 1.2 : 0)
+        // Distancia real, con un empujoncito de preferencia (kind + lugar en la lista) para
+        // desempatar entre dos que están parecido de cerca — no reemplaza "el más cerca va".
+        const d = Math.hypot(s.x - tx, s.y - ty) - (s.id === humanId ? 1.2 : 0) - chaserPull(s) * 0.9
         if (d < best) { best = d; chaser = s }
       }
     }
@@ -118,7 +152,9 @@ export class TeamAI {
       let best = Infinity
       for (const s of team) {
         if (busy.has(s.id)) continue
-        const f = (s.x - own.lineX) * u
+        // f mide qué tan atrás está; restar el "pull" hace que el 0 (y el pesado) ganen el
+        // desempate para quedarse de último hombre sin que eso les esté reservado siempre.
+        const f = (s.x - own.lineX) * u - lastManPull(s)
         if (f < best) { best = f; lastMan = s }
       }
       if (lastMan) busy.add(lastMan.id)
@@ -150,11 +186,43 @@ export class TeamAI {
     const rest = team.filter((s) => !busy.has(s.id) && s.id !== humanId)
     if (mode === "attack" && carrier) {
       const claimed: Array<{ x: number; y: number }> = []
+      const oppGoal = GOALS[side === 0 ? 1 : 0]
+      // ¿La jugada ya entró de verdad en zona de gol? Ahí ya no sirve "abrirse ancho a mitad de
+      // cancha": lo que enseña el hockey de patines es plantarse en la boca del arco, un palo cada
+      // uno, a peinar un pelotazo o un rebote — un desvío también es gol.
+      const deepAttack = Math.abs(oppGoal.lineX - carrier.x) < 13
+      // Nadie tiene un carril fijo de por vida, pero de listado el 2 y el 3 son quienes más
+      // pisan punta (ancho y arriba); el 1 es el armador: pide la bola cerca, no se cuelga al
+      // fondo; el 0, si igual quedó libre acá (no de último hombre), acompaña corto y central.
       rest.sort((a, b) => a.y - b.y)
-      rest.forEach((s, i) => {
+      let wing = 0
+      rest.forEach((s) => {
+        const idx = rosterIndex(s.id)
         const opposite = carrier.y < RINK.width / 2
-        const laneBase = i % 2 === 0 ? (opposite ? RINK.width * 0.75 : RINK.width * 0.25) : (opposite ? RINK.width * 0.9 : RINK.width * 0.1)
-        const ahead = i % 2 === 0 ? 8 : 2
+        if ((idx === 2 || idx === 3) && deepAttack) {
+          // Un palo cada punta: ofrece el desvío de cerca en vez de esperar el pase de vuelta.
+          const side2 = wing % 2 === 0 ? opposite : !opposite
+          const tx = oppGoal.lineX - u * 2.1
+          const ty = side2 ? oppGoal.yMax - 0.7 : oppGoal.yMin + 0.7
+          claimed.push({ x: tx, y: ty })
+          this.moveTo(w, s, tx, ty, speedMul, team, true)
+          wing++
+          return
+        }
+        let laneBase: number
+        let ahead: number
+        if (idx === 2 || idx === 3) {
+          const side2 = wing % 2 === 0 ? opposite : !opposite
+          laneBase = side2 ? RINK.width * 0.85 : RINK.width * 0.15
+          ahead = 8 + (s.kind === "veloz" ? 2 : 0)
+          wing++
+        } else if (idx === 1) {
+          laneBase = RINK.width * 0.5 + (opposite ? 5 : -5)
+          ahead = 3
+        } else {
+          laneBase = RINK.width * 0.5 + (opposite ? -4 : 4)
+          ahead = s.kind === "pesado" ? 0 : 2
+        }
         const spot = this.findOpenSpot(w, side, carrier, carrier.x + u * ahead, laneBase, opp, claimed)
         claimed.push(spot)
         this.moveTo(w, s, spot.x, spot.y, speedMul, team, true)
@@ -178,7 +246,10 @@ export class TeamAI {
         const d = Math.hypot(dx, dy) || 1
         // Cubre la línea de tiro, no al cuerpo: más cerca del rival cuanto más cerca está del arco
         // (ahí el remate es real), más suelto cuando todavía está lejos (curar el pase, no pegarse).
-        const interpose = clamp(0.8 + (d / RINK.length) * 3.6, 0.8, 3.4)
+        // El pesado marca más corto y firme; el veloz se anima a soltar un poco más porque
+        // confía en recuperar con el sprint.
+        const kindTight = s.kind === "pesado" ? 0.72 : s.kind === "veloz" ? 1.18 : 1
+        const interpose = clamp((0.8 + (d / RINK.length) * 3.6) * kindTight, 0.7, 3.6)
         this.moveTo(w, s, o.x + (dx / d) * interpose, o.y + (dy / d) * interpose, speedMul, team, true)
       })
     }
@@ -260,7 +331,6 @@ export class TeamAI {
     const goal = GOALS[side === 0 ? 1 : 0]
     const mm = this.m(s.id)
     const think = 0.55 - 0.4 * skill
-    const range = 10 + 6 * skill
     const dGoal = Math.hypot(goal.lineX - s.x, goal.cy - s.y)
     const facingGoal = (goal.lineX - s.x) * u > 1
 
@@ -269,16 +339,45 @@ export class TeamAI {
 
     if (mm.carryTime >= think && s.pickupCooldown <= 0) {
       // 1) tiro
-      if (facingGoal && dGoal <= range) {
+      // Dos zonas, no una: de cerca (`closeRange`) se puede tirar con algo de marca encima —
+      // un tiro de poder normal, atajable de verdad. De lejos, hasta `bombRange` (así juegan
+      // los grandes: un supertiro de 30 m), solo si el arco está REALMENTE despejado de punta a
+      // punta (o directo a un compañero parado en el segundo palo, que cuenta como despejado
+      // porque `clear` solo mira rivales — si la desvía, es gol). Nada de bypass ni garantía: el
+      // arquero hace lo que puede, la velocidad real decide.
+      const closeRange = 10 + 6 * skill
+      const bombRange = 30
+      if (facingGoal && dGoal <= bombRange) {
         const g = w.goalies.find((q) => q.side === goal.side)
         const aimY = g && g.y > goal.cy ? goal.yMin + 0.4 : goal.yMax - 0.4
         const bias = g ? 0 : this.rnd() < 0.5 ? goal.yMin + 0.4 : goal.yMax - 0.4
         const ty = g ? aimY : bias
         let clear = true
         for (const o of opp) if (distToSegment(o.x, o.y, s.x, s.y, goal.lineX, ty) < 0.85) { clear = false; break }
-        if (clear || pressure < 1.6) {
+        const inClose = dGoal <= closeRange
+        if (inClose && (clear || pressure < 1.6)) {
           const err = (this.rnd() - 0.5) * 2 * 0.12 * (1 - skill)
-          kick(w, s.id, Math.atan2(ty - s.y, goal.lineX - s.x) + err, 24 + 4 * skill)
+          // BUG real que encontré acá antes: siempre se pateaba a 24-28 m/s, que es justo el piso
+          // del "súper tiro" (`STAMINA.superShotMinSpeed`) — CUALQUIER remate de cerca terminaba
+          // siendo un súper tiro. Ahora el de cerca es un tiro de poder normal (más floja cuanto
+          // más lejos, dentro de esta zona), y de vez en cuando, si hay margen y tanque, carga el
+          // súper tiro de cerca también.
+          const near = clamp(1 - dGoal / closeRange, 0, 1) // 1 = pegado al arco, 0 = borde de esta zona
+          const wantsSuper = near > 0.6 && clear && s.stamina >= SUPER_SHOT_COST + 15
+            && this.rnd() < 0.1 + 0.2 * skill
+          const speed = wantsSuper
+            ? STAMINA.superShotMinSpeed + 2 + 3 * skill
+            : 12 + 6 * near + 3 * skill // 12..21 m/s: potente y realista, pero el arquero tiene chance
+          kick(w, s.id, Math.atan2(ty - s.y, goal.lineX - s.x) + err, speed)
+          mm.carryTime = 0
+          return
+        }
+        // El supertiro de larga distancia: solo con el arco de verdad libre (ni un rival cortando
+        // la línea) y solo si hay tanque para cargarlo — como el humano, gasta la mitad de la
+        // energía. La chance sube con el nivel del jugador: esto lo hacen "los mejores", no cualquiera.
+        if (!inClose && clear && s.stamina >= SUPER_SHOT_COST && this.rnd() < 0.05 + 0.35 * skill) {
+          const err = (this.rnd() - 0.5) * 2 * 0.08 * (1 - skill)
+          kick(w, s.id, Math.atan2(ty - s.y, goal.lineX - s.x) + err, STAMINA.superShotMinSpeed + 2 + 6 * skill)
           mm.carryTime = 0
           return
         }

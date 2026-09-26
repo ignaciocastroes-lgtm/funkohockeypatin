@@ -393,16 +393,17 @@ function updateRest(w: World, dt: number) {
 
 /**
  * Intenta el cambio por cansancio de `side`: saca al más cansado que esté por debajo del umbral
- * (nunca al que lleva el puck) y mete al primer suplente fresco. Tope: RULES.maxFatigueSubs por
- * equipo por partido. Devuelve true si el cambio se hizo.
+ * (nunca al que lleva el puck, y nunca al que el humano tiene agarrado en ese instante — si no, el
+ * control saltaba de abajo de los dedos sin avisar) y mete al primer suplente fresco. Tope:
+ * RULES.maxFatigueSubs por equipo por partido. Devuelve true si el cambio se hizo.
  */
-export function trySub(w: World, side: Side): boolean {
+export function trySub(w: World, side: Side, excludeId: string | null = null): boolean {
   if (w.subsUsed[side] >= RULES.maxFatigueSubs) return false
   const restIdx = w.restBench.findIndex((b) => b.side === side)
   if (restIdx < 0) return false
   let tired: Skater | null = null
   for (const s of w.skaters) {
-    if (s.side !== side || s.id === w.puck.carrierId) continue
+    if (s.side !== side || s.id === w.puck.carrierId || s.id === excludeId) continue
     if (s.stamina < STAMINA.subThresholdPct && (!tired || s.stamina < tired.stamina)) tired = s
   }
   if (!tired) return false

@@ -189,6 +189,9 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         (saved.settings.trainingUnlocked || !!saved.cup?.championId)
           ? h("button", { class: "fp-btn gr", "data-key": "training", onclick: () => go("training") }, "Modo entrenamiento")
           : null,
+        saved.settings.godModeUnlocked
+          ? h("button", { class: "fp-btn gr", "data-key": "god-mode", onclick: () => startGodMode() }, "⚡ Modo Dios vs Dios")
+          : null,
         h("button", { class: "fp-btn te", "data-key": "credits", onclick: () => go("credits") }, "Créditos"),
         canOfferInstall() ? h("button", { class: "fp-btn gr", "data-key": "install", onclick: () => handleInstallClick() }, "📲 Instalar la app") : null,
       ),
@@ -435,12 +438,29 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     showDialog("¡MODO ENTRENAMIENTO DESBLOQUEADO!", "Entrenamiento y práctica de penales, ya están en el menú principal.", [{ label: "Genial", primary: true }])
   }
 
+  /** Desbloquea el modo Dios vs Dios: mismo atajo secreto que el entrenamiento (toques en el logo
+   *  o el código de teclado), pero al doble de "precio" — y solo para quien ya encontró el primero.
+   *  Es un partido demo (IA vs IA) con las dos escuadras a nivel maestro, para mirar rebotes y
+   *  pases de verdad, no para jugarlo. */
+  function unlockGodMode() {
+    if (saved.settings.godModeUnlocked) return
+    saved.settings.godModeUnlocked = true
+    persist()
+    render()
+    showDialog("⚡ ¡MODO DIOS VS DIOS DESBLOQUEADO!", "Un partido demo con las dos escuadras a nivel maestro — mirá rebotes y pases de verdad. Ya está en el menú principal.", [{ label: "Genial", primary: true }])
+  }
+
   // ---------- atajo secreto por toques en el logo (como el modo desarrollador de Android) ----------
   // Reemplaza al de mantener apretado: ese dependía de un gesto sostenido de varios segundos, con
   // demasiados puntos donde el sistema podía interferir (ver la nota vieja en el README). Tocar
   // rápido varias veces es un gesto mucho más chico y mucho más difícil de que el sistema confunda.
+  // El modo Dios vs Dios usa el MISMO gesto, pero recién aparece una vez que ya encontraste el de
+  // entrenamiento — y al doble de "precio" (el doble de toques, con el doble de ventana de tiempo
+  // para que siga siendo humanamente posible).
   const LOGO_TAPS_NEEDED = 7
   const LOGO_TAP_WINDOW = 1500
+  const GOD_TAPS_NEEDED = LOGO_TAPS_NEEDED * 2
+  const GOD_TAP_WINDOW = LOGO_TAP_WINDOW * 2
   let logoTaps = 0
   let logoLastTapAt = 0
   let logoHintTimer = 0
@@ -449,22 +469,27 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const bolt = h("div", { class: "fp-bolt" })
     bolt.appendChild(h("img", { src: GAME_ICON, alt: "", "aria-hidden": "true", draggable: "false" }))
     const hint = h("div", { class: "fp-tap-hint" })
-    if (!saved.settings.trainingUnlocked) {
+    if (!saved.settings.trainingUnlocked || !saved.settings.godModeUnlocked) {
       bolt.addEventListener("click", () => {
+        // Antes de desbloquear entrenamiento, este gesto busca eso; una vez encontrado, el mismo
+        // gesto (ahora al doble) busca el modo Dios vs Dios.
+        const targetGod = saved.settings.trainingUnlocked
+        const needed = targetGod ? GOD_TAPS_NEEDED : LOGO_TAPS_NEEDED
+        const winMs = targetGod ? GOD_TAP_WINDOW : LOGO_TAP_WINDOW
         const now = performance.now()
-        if (now - logoLastTapAt > LOGO_TAP_WINDOW) logoTaps = 0
+        if (now - logoLastTapAt > winMs) logoTaps = 0
         logoLastTapAt = now
         logoTaps++
-        if (logoTaps >= LOGO_TAPS_NEEDED) {
+        if (logoTaps >= needed) {
           logoTaps = 0
           hint.textContent = ""
-          unlockTraining()
+          if (targetGod) unlockGodMode(); else unlockTraining()
           return
         }
-        const left = LOGO_TAPS_NEEDED - logoTaps
+        const left = needed - logoTaps
         if (logoTaps >= 3) hint.textContent = left === 1 ? "¡un toque más!" : `${left} toques más...`
         window.clearTimeout(logoHintTimer)
-        logoHintTimer = window.setTimeout(() => { hint.textContent = ""; logoTaps = 0 }, LOGO_TAP_WINDOW)
+        logoHintTimer = window.setTimeout(() => { hint.textContent = ""; logoTaps = 0 }, winMs)
       })
     }
     return h("div", { class: "fp-brand" },
@@ -523,46 +548,28 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     cupPlaying = null
     demoPlaying = false
     demoFromBoot = false
+    godPlaying = false
     trainingPlaying = null
   }
 
-  /** Barra fija de controles (pausa / pantalla completa / sonido / música) sobre el partido en curso. */
-  function matchHudBar(wrap: HTMLElement, m: MatchHandle): HTMLElement {
+  /** Barra fija sobre el partido en curso. En partido real: pausa + cambio de vista, nada más —
+   *  sonido, música, cambiar de jugador y pantalla completa viven en el menú de pausa. En el demo
+   *  (attract mode) ni siquiera hay pausa: un único botón de cambio de vista arriba alcanza, la
+   *  placa y el "TOCÁ PARA JUGAR" hacen el resto. */
+  function matchHudBar(wrap: HTMLElement, m: MatchHandle, isDemo = false): HTMLElement {
     const viewLabel = (v: string) => (v === "full" ? "TOT" : v === "three-quarter" ? "3/4" : "SEG")
     const viewName = (v: string) => (v === "full" ? "cancha completa" : v === "three-quarter" ? "3/4 de cancha" : "seguir la jugada")
-    const MUSIC_ICON: Record<Settings["music"], string> = { on: "🎉", low: "🔉", off: "🔇" }
-    const MUSIC_NAME: Record<Settings["music"], string> = { on: "Música: prendida", low: "Música: atenuada", off: "Música: apagada" }
-    const MUSIC_NEXT: Record<Settings["music"], Settings["music"]> = { on: "low", low: "off", off: "on" }
+    const viewBtn = h("button", { class: "fp-btn view", "aria-label": `Vista: ${viewName(m.viewMode)} — tocá para cambiar`, "data-key": "view",
+      onclick: (e: Event) => {
+        m.cycleView()
+        const b = e.currentTarget as HTMLElement
+        b.textContent = viewLabel(m.viewMode)
+        b.setAttribute("aria-label", `Vista: ${viewName(m.viewMode)} — tocá para cambiar`)
+      } }, viewLabel(m.viewMode))
+    if (isDemo) return h("div", { class: "fp-hud" }, viewBtn)
     return h("div", { class: "fp-hud" },
       h("button", { class: "fp-btn", "aria-label": "Pausa", "data-key": "pause", onclick: () => showPause(wrap) }, "❚❚"),
-      h("button", { class: "fp-btn", "aria-label": "Cambiar de jugador", "data-key": "cycle-player", onclick: () => m.cyclePlayer() }, "🔄"),
-      h("button", { class: "fp-btn view", "aria-label": `Vista: ${viewName(m.viewMode)} — tocá para cambiar`, "data-key": "view",
-        onclick: (e: Event) => {
-          m.cycleView()
-          const b = e.currentTarget as HTMLElement
-          b.textContent = viewLabel(m.viewMode)
-          b.setAttribute("aria-label", `Vista: ${viewName(m.viewMode)} — tocá para cambiar`)
-        } }, viewLabel(m.viewMode)),
-      canFullscreen() ? h("button", { class: "fp-btn", "aria-label": "Pantalla completa", "data-key": "fs", onclick: toggleFullscreen }, "⛶") : null,
-      h("button", { class: "fp-btn", "aria-label": saved.settings.sound ? "Silenciar" : "Activar sonido", "data-key": "snd", "aria-pressed": String(saved.settings.sound),
-        onclick: (e: Event) => {
-          saved.settings.sound = !saved.settings.sound
-          m.setSound(saved.settings.sound)
-          const b = e.currentTarget as HTMLElement
-          b.textContent = saved.settings.sound ? "🔊" : "🔇"
-          b.setAttribute("aria-label", saved.settings.sound ? "Silenciar" : "Activar sonido")
-          b.setAttribute("aria-pressed", String(saved.settings.sound))
-          persist()
-        } }, saved.settings.sound ? "🔊" : "🔇"),
-      h("button", { class: "fp-btn", "aria-label": MUSIC_NAME[saved.settings.music], "data-key": "music",
-        onclick: (e: Event) => {
-          saved.settings.music = MUSIC_NEXT[saved.settings.music]
-          m.setMusic(saved.settings.music)
-          const b = e.currentTarget as HTMLElement
-          b.textContent = MUSIC_ICON[saved.settings.music]
-          b.setAttribute("aria-label", MUSIC_NAME[saved.settings.music])
-          persist()
-        } }, MUSIC_ICON[saved.settings.music]),
+      viewBtn,
     )
   }
 
@@ -646,10 +653,98 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       },
     })
     match = m
+    wrap.append(matchHudBar(wrap, m, true))
+  }
+
+  /** Modo Dios vs Dios: espectador (IA vs IA, nadie juega), con las DOS escuadras forzadas a nivel
+   *  maestro (`aiSkill`) — pero de acá en más se juega, se pausa y termina COMO una final de Copa:
+   *  menú de pausa completo (no el HUD pelado del demo), sin empates (tanda de penales si hace
+   *  falta) y, al final, la misma ceremonia de campeón que la Copa de verdad — el que gana esta
+   *  final se corona. No toca `saved.cup` (la Copa real del jugador no se entera de esto).
+   */
+  let godPlaying = false
+  function startGodMode() {
+    stopMatch()
+    godPlaying = true
+    screen = "match"
+    const teams = allTeams(saved)
+    const a = teams[Math.floor(Math.random() * teams.length)]
+    const rest = teams.filter((t) => t.id !== a.id)
+    const b = rest.length ? rest[Math.floor(Math.random() * rest.length)] : a
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = teamMatchOptions(a.id, b.id)
+    const m = mountMatch(wrap, {
+      ...mo,
+      demo: true,
+      aiSkill: [1, 1],
+      onEnd: (r) => {
+        if (r.score[0] === r.score[1]) { startGodShootout(wrap, a.id, b.id, r.score); return }
+        const pb = wrap.querySelector<HTMLButtonElement>('[data-key="pause"]')
+        if (pb) { pb.disabled = true; pb.setAttribute("aria-disabled", "true") }
+        endTimer = window.setTimeout(() => showGodEnd(wrap, a.id, b.id, r.score), 1600)
+      },
+      onAutoPause: () => showPause(wrap),
+    })
+    match = m
     wrap.append(matchHudBar(wrap, m))
   }
 
-  // ---------- entrenamiento ----------
+  /** Empate en la final Dios vs Dios: tanda de penales, igual que en la Copa real — acá tampoco
+   *  se admiten empates, alguien tiene que coronarse. Sigue siendo espectador (`demo: true`). */
+  function startGodShootout(prevWrap: HTMLElement, home: string, away: string, regularScore: [number, number]) {
+    stopMatch()
+    godPlaying = true
+    screen = "match"
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = teamMatchOptions(home, away)
+    const m = mountMatch(wrap, {
+      ...mo,
+      demo: true,
+      aiSkill: [1, 1],
+      shootout: true,
+      onShootoutEnd: (sr) => {
+        const finalScore: [number, number] = [regularScore[0] + sr.made[0], regularScore[1] + sr.made[1]]
+        const winnerName = teamById(sr.winner === 0 ? home : away).name
+        endTimer = window.setTimeout(() => {
+          showDialog(
+            "¡Definido por penales!",
+            `${winnerName} ganó la tanda ${Math.max(...sr.made)}-${Math.min(...sr.made)}.`,
+            [{ label: "Seguir", primary: true, onClick: () => showGodEnd(wrap, home, away, finalScore) }],
+          )
+        }, 900)
+      },
+      onAutoPause: () => showPause(wrap),
+    })
+    match = m
+    wrap.append(matchHudBar(wrap, m))
+  }
+
+  /** Fin de la final Dios vs Dios: la misma ceremonia de campeón que usa la Copa real
+   *  (`celebrationScene`) — el que ganó esta final se corona. Es una final aparte, autocontenida:
+   *  no toca `saved.cup` ni el bracket de verdad del jugador. Desde acá se puede ir derecho a los
+   *  créditos, como el cierre de una partida completa. */
+  function showGodEnd(wrap: HTMLElement, home: string, away: string, score: [number, number]) {
+    if (!match || destroyed) return
+    closeDialog()
+    const homeT = teamById(home)
+    const awayT = teamById(away)
+    const [lc, vc] = distinctColors(homeT.color, awayT.color)
+    const winnerId = score[0] > score[1] ? home : away
+    const winnerT = teamById(winnerId)
+    const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Final Dios vs Dios", style: "max-width:520px" },
+      celebrationScene(winnerT),
+      h("div", { class: "fp-score" }, h("span", { style: `color:${lc}` }, String(score[0])), h("span", { style: "font-size:.6em;opacity:.7" }, "-"), h("span", { style: `color:${vc}` }, String(score[1]))),
+      h("p", { style: "margin:0;text-align:center;font-size:14px" }, `${winnerT.name} gana la final Dios vs Dios y se queda con la Copa.`),
+      h("div", { class: "fp-row" },
+        h("button", { class: "fp-btn solid", "data-key": "rematch", onclick: () => startGodMode() }, "Otra final"),
+        h("button", { class: "fp-btn ye", "data-key": "credits", onclick: () => { stopMatch(); go("credits") } }, "Créditos"),
+        h("button", { class: "fp-btn gr", "data-key": "menu", onclick: () => { stopMatch(); go("menu") } }, "Menú"),
+      ),
+    )
+    openModal(wrap, h("div", { class: "fp-overlay" }, box))
+  }
   /** Tres niveles para aprender de a poco: cada uno combina arquero + peso de bocha (mismo eje que
    *  usa el partido normal) en una progresión con sentido, no perillas sueltas. */
   const TRAINING_LEVELS: Array<{
@@ -1016,9 +1111,11 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const s = saved.settings
     const cp = cupPlaying
     const isDemo = demoPlaying
+    const gp = godPlaying
     const tp = trainingPlaying
     const restartWithNewScheme = () => {
       if (isDemo) startDemo()
+      else if (gp) startGodMode()
       else if (tp) startTraining(tp.goalie, tp.penalties, tp.puckKind)
       else if (cp) startCupMatch(cp.which, cp.home, cp.away)
       else startMatch()
@@ -1052,25 +1149,63 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
 
   function showPause(wrap: HTMLElement) {
     if (!match || match.ended || dialog) return
+    const m = match
     match.pause()
     closeDialog()
     const back = () => { closeDialog(); match?.resume() }
     const cp = cupPlaying
     const isDemo = demoPlaying
+    const gp = godPlaying
     const tp = trainingPlaying
+    const MUSIC_ICON: Record<Settings["music"], string> = { on: "🎉", low: "🔉", off: "🔇" }
+    const MUSIC_NAME: Record<Settings["music"], string> = { on: "Música: prendida", low: "Música: atenuada", off: "Música: apagada" }
+    const MUSIC_NEXT: Record<Settings["music"], Settings["music"]> = { on: "low", low: "off", off: "on" }
+    // Sonido / música / cambiar de jugador / pantalla completa: viven acá, no sueltos en pantalla
+    // durante el partido — la única barra visible en partido real es Pausa + Vista. En el demo puro
+    // no hay quickRow (nada que ajustar); en Dios vs Dios sí, salvo "cambiar de jugador": es
+    // espectador, no hay nadie propio en cancha para cambiar.
+    const spectator = isDemo || gp
+    const quickRow = isDemo ? null : h("div", { class: "fp-pause-quick" },
+      spectator ? null : h("button", { class: "fp-btn", "aria-label": "Cambiar de jugador", "data-key": "cycle-player", onclick: () => m.cyclePlayer() }, "🔄"),
+      h("button", { class: "fp-btn", "aria-label": saved.settings.sound ? "Silenciar" : "Activar sonido", "data-key": "snd", "aria-pressed": String(saved.settings.sound),
+        onclick: (e: Event) => {
+          saved.settings.sound = !saved.settings.sound
+          m.setSound(saved.settings.sound)
+          const b = e.currentTarget as HTMLElement
+          b.textContent = saved.settings.sound ? "🔊" : "🔇"
+          b.setAttribute("aria-label", saved.settings.sound ? "Silenciar" : "Activar sonido")
+          b.setAttribute("aria-pressed", String(saved.settings.sound))
+          persist()
+        } }, saved.settings.sound ? "🔊" : "🔇"),
+      h("button", { class: "fp-btn", "aria-label": MUSIC_NAME[saved.settings.music], "data-key": "music",
+        onclick: (e: Event) => {
+          saved.settings.music = MUSIC_NEXT[saved.settings.music]
+          m.setMusic(saved.settings.music)
+          const b = e.currentTarget as HTMLElement
+          b.textContent = MUSIC_ICON[saved.settings.music]
+          b.setAttribute("aria-label", MUSIC_NAME[saved.settings.music])
+          persist()
+        } }, MUSIC_ICON[saved.settings.music]),
+      canFullscreen() ? h("button", { class: "fp-btn", "aria-label": "Pantalla completa", "data-key": "fs", onclick: toggleFullscreen }, "⛶") : null,
+    )
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Pausa" },
-      h("h2", { class: "fp-arcade" }, isDemo ? "DEMO EN PAUSA" : tp ? "ENTRENAMIENTO EN PAUSA" : "PAUSA"),
+      h("h2", { class: "fp-arcade" }, isDemo ? "DEMO EN PAUSA" : gp ? "FINAL DIOS VS DIOS EN PAUSA" : tp ? "ENTRENAMIENTO EN PAUSA" : "PAUSA"),
       h("button", { class: "fp-btn solid", "data-key": "resume", onclick: back }, "Continuar"),
+      quickRow,
       isDemo ? null : h("button", { class: "fp-btn", "data-key": "control-settings", onclick: () => showControlSettings(wrap) }, "⚙️ Ajustes de control"),
       isDemo
         ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startDemo() }, "Otro partido demo")
+        : gp
+        ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startGodMode() }, "Otra final")
         : tp
         ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie, tp.penalties, tp.puckKind) }, "Reiniciar entrenamiento")
         : h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
             { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
             { label: "Cancelar", onClick: () => showPause(wrap) },
           ], wrap) }, "Reiniciar partido"),
-      h("button", { class: "fp-btn rd", "data-key": "quit", onclick: () => showDialog(isDemo ? "¿Salir del modo demo?" : tp ? "¿Salir del entrenamiento?" : cp ? "¿Salir a la Copa?" : "¿Salir al menú?", isDemo ? "Se corta el partido demo." : tp ? "Se corta la práctica." : "Se pierde el partido en curso.", [
+      h("button", { class: "fp-btn rd", "data-key": "quit", onclick: () => showDialog(
+        isDemo ? "¿Salir del modo demo?" : gp ? "¿Salir de la final Dios vs Dios?" : tp ? "¿Salir del entrenamiento?" : cp ? "¿Salir a la Copa?" : "¿Salir al menú?",
+        isDemo ? "Se corta el partido demo." : gp ? "Se corta la final." : tp ? "Se corta la práctica." : "Se pierde el partido en curso.", [
         { label: "Salir", danger: true, onClick: () => { stopMatch(); go(cp ? "cup" : tp ? "training" : "menu") } },
         { label: "Cancelar", onClick: () => showPause(wrap) },
       ], wrap) }, isDemo || tp ? "Salir al menú" : cp ? "Salir a la Copa" : "Salir al menú"),
@@ -1106,14 +1241,19 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   // ---------- teclado (escritorio) ----------
   // Shift + 0-1-7-8-9 (en la pantalla de selección de equipos) desbloquea el modo entrenamiento
   // sin necesidad de ganar la Copa — es un atajo de prueba, no algo que se explique en pantalla.
+  // El modo Dios vs Dios usa el mismo código repetido dos veces seguidas (el doble de "precio"),
+  // y solo cuenta una vez que el de entrenamiento ya está encontrado.
   const TRAINING_CODE = "01789"
+  const GOD_CODE = TRAINING_CODE + TRAINING_CODE
   let codeBuf = ""
   const onKey = (e: KeyboardEvent) => {
     const digit = digitFromCode(e.code)
     if (screen === "setup" && e.shiftKey && digit !== null) {
       // e.code y no e.key: con Shift, e.key es "!" ")" etc. y el código nunca coincidía
-      codeBuf = (codeBuf + digit).slice(-TRAINING_CODE.length)
-      if (codeBuf === TRAINING_CODE && !saved.settings.trainingUnlocked) {
+      codeBuf = (codeBuf + digit).slice(-GOD_CODE.length)
+      if (saved.settings.trainingUnlocked) {
+        if (!saved.settings.godModeUnlocked && codeBuf.endsWith(GOD_CODE)) unlockGodMode()
+      } else if (codeBuf.endsWith(TRAINING_CODE)) {
         unlockTraining()
       }
       return

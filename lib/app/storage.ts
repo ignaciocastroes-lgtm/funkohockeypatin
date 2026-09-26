@@ -27,6 +27,10 @@ export interface Settings {
   tutorialOptOut: boolean
   /** Modo entrenamiento desbloqueado (ganando la Copa, o con el atajo secreto). */
   trainingUnlocked: boolean
+  /** Modo Dios vs Dios desbloqueado: mismo atajo secreto que el entrenamiento, pero al doble de
+   *  "precio" (el doble de toques / código el doble de largo) — un partido nivel maestro, IA vs
+   *  IA a tope, para mirar rebotes y pases de verdad. */
+  godModeUnlocked: boolean
   /** Peso de la bocha en partido normal (por defecto "normal") — ver `PUCK_KINDS` en el motor. */
   puckKind: PuckKind
   /** Modo ahorro: menos densidad de público y sin las banderitas de la tribuna — para que ande
@@ -53,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
   music: "on",
   tutorialOptOut: false,
   trainingUnlocked: false,
+  godModeUnlocked: false,
   puckKind: "normal",
   graphicsSaver: false,
 }
@@ -122,6 +127,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     // migración: quien ya lo había visto (versión anterior) no lo necesita de nuevo
     else if (s.seenTutorial === true) out.settings.tutorialOptOut = true
     if (typeof s.trainingUnlocked === "boolean") out.settings.trainingUnlocked = s.trainingUnlocked
+    if (typeof s.godModeUnlocked === "boolean") out.settings.godModeUnlocked = s.godModeUnlocked
     if (s.puckKind === "liviana" || s.puckKind === "normal" || s.puckKind === "pesada") out.settings.puckKind = s.puckKind
     if (typeof s.graphicsSaver === "boolean") out.settings.graphicsSaver = s.graphicsSaver
     out.cup = sanitizeCup(data.cup, seen)

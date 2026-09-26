@@ -16,8 +16,19 @@ export interface DrawOptions {
   comboGoal?: boolean
   /** true hasta que el equipo humano hace su primera acción (pase o tiro): hint chico abajo. */
   showHint?: boolean
+  /** Esquema de control activo — solo para que el hint de abajo (`drawActionHint`) diga lo que
+   *  hay que hacer de verdad. "honda" (estirar y soltar) es el default; ya no asumas que es
+   *  siempre un deslizamiento a la derecha, eso era del esquema viejo. */
+  controlScheme?: "honda" | "botones"
   /** true en modo demo (IA vs IA): muestra el cartel "TOCÁ PARA JUGAR" pulsando. */
   demo?: boolean
+  /** Solo demo: sello de una línea (como el GOLAZO de la placa) para la jugada que se acaba de
+   *  reconocer en vivo — ver `DemoTutor`. null = no hay nada que mostrar ahora mismo. */
+  demoCaption?: { text: string; until: number } | null
+  /** Solo demo: recién en true, cuando `DemoTutor` ya narró las 4 jugadas, se deja ver el cartel
+   *  "TOCÁ PARA JUGAR" — antes el demo tiene que enseñar, no vender. Por defecto true (fuera del
+   *  demo esto no aplica). */
+  demoReady?: boolean
   /** 0..1: interpolación entre el paso anterior y el actual. */
   /** 0..1: entusiasmo actual del público (`crowd.info.excitement`), para que las gradas reboten un
    *  poco más en los momentos de tensión. Sin público (entrenamiento), se usa un valor tranquilo fijo. */
@@ -1144,7 +1155,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, w: World, o: DrawOptions,
 
   // ---- fila de abajo: PUNTOS · FALTAS ... FALTAS · PUNTOS ----
   const goalPop = goalBumpScale(w)
-  const two = (n: number) => String(Math.min(99, n)).padStart(2, "0")
+  // Sin cero a la izquierda: la placa lee "0", "1", "10" — nunca "00", "01". Eso vale tanto
+  // para los goles como para las faltas (antes ambos usaban padStart y se leía "00:00" / "01:00").
+  const two = (n: number) => String(Math.min(99, Math.max(0, n)))
   for (const side of [0, 1] as const) {
     const x = sc[side]
     const scoring = w.phase === "goal" && (w.puck.lastTouchSide ?? 0) === side
@@ -1211,7 +1224,10 @@ export function drawHud(ctx: CanvasRenderingContext2D, w: World, o: DrawOptions,
   drawComboLamps(ctx, w, o, bx + boxW / 2, by + boxH + 8)
 
   if (o.showHint) drawActionHint(ctx, o, vw, vh)
-  if (o.demo) drawDemoCaption(ctx, o, vw, vh)
+  if (o.demo) {
+    if (o.demoCaption) drawDemoStamp(ctx, o.demoCaption.text, o, vw, vh)
+    if (o.demoReady !== false) drawDemoCaption(ctx, o, vw, vh)
+  }
 }
 
 /** 1 -> 1.35 -> 1 en los primeros ~0.4s del festejo de gol, derivado del propio phaseTimer del
@@ -1275,8 +1291,15 @@ function drawActionHint(ctx: CanvasRenderingContext2D, o: DrawOptions, vw: numbe
   ctx.textAlign = "center"
   ctx.textBaseline = "middle"
   const y = vh - fs * 1.6
-  let text = "Tocá a un compañero = pase · deslizá a la derecha = pasar/tirar"
-  if (ctx.measureText(text).width + fs * 1.4 > vw - 16) text = "Tocá compañero = pase · Deslizá = tiro"
+  // El default es honda (estirás atrás y soltás, como una gomera); "botones" es el otro esquema.
+  // Antes esto decía siempre "deslizá a la derecha", que es de un esquema que ya no existe.
+  const isButtons = o.controlScheme === "botones"
+  let text = isButtons
+    ? "Tocá a un compañero = pase · PASE verde / TIRO amarillo = tirar"
+    : "Tocá a un compañero = pase · Estirá y soltá = pase o tiro"
+  if (ctx.measureText(text).width + fs * 1.4 > vw - 16) {
+    text = isButtons ? "Tocá compañero = pase · Botones = tiro" : "Tocá compañero = pase · Estirá y soltá"
+  }
   const tw = ctx.measureText(text).width + fs * 1.4
   ctx.fillStyle = "rgba(0,0,0,0.55)"
   ctx.beginPath()
@@ -1285,6 +1308,30 @@ function drawActionHint(ctx: CanvasRenderingContext2D, o: DrawOptions, vw: numbe
   ctx.roundRect ? ctx.roundRect(bx, y - bh / 2, tw, bh, bh / 2) : ctx.rect(bx, y - bh / 2, tw, bh)
   ctx.fill()
   ctx.fillStyle = "rgba(255,255,255,0.92)"
+  ctx.fillText(text, vw / 2, y)
+  ctx.restore()
+}
+
+/** Sello de una línea (como el GOL/GOLAZO de la placa) para la jugada que el demo acaba de
+ *  reconocer en vivo — nace grande y se achica, así se nota igual que un festejo. */
+function drawDemoStamp(ctx: CanvasRenderingContext2D, text: string, o: DrawOptions, vw: number, vh: number) {
+  const fs = Math.max(13, Math.min(20, vh * 0.042))
+  ctx.save()
+  ctx.font = `bold ${fs}px ${o.fontFamily}`
+  ctx.textAlign = "center"
+  ctx.textBaseline = "middle"
+  const y = vh * 0.22
+  const tw = ctx.measureText(text).width + fs * 1.8
+  const bh = fs * 2
+  ctx.fillStyle = "rgba(0,0,0,0.6)"
+  ctx.beginPath()
+  const bx = vw / 2 - tw / 2
+  ctx.roundRect ? ctx.roundRect(bx, y - bh / 2, tw, bh, bh / 2) : ctx.rect(bx, y - bh / 2, tw, bh)
+  ctx.fill()
+  ctx.strokeStyle = "rgba(253,224,71,0.55)"
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+  ctx.fillStyle = "#fde047"
   ctx.fillText(text, vw / 2, y)
   ctx.restore()
 }

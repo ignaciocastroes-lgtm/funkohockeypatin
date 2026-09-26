@@ -33,6 +33,7 @@ import { Confetti, ReplayBuffer, drawFlash, replayFrameAt, replayWorld } from ".
 import type { Flash, GoalReplay } from "./effects"
 import { TouchInput, isShootKey, keyboardVector } from "./input"
 import { Crowd } from "./crowd"
+import { DemoTutor } from "./demo-tutor"
 import type { MusicLevel } from "./crowd"
 import { Sfx } from "./sfx"
 
@@ -58,6 +59,9 @@ export interface MatchOptions {
    *  previsible; liviana = más rápida y rebota más. */
   puckKind?: PuckKind
   nivel: Nivel
+  /** Fuerza el nivel de la IA en los DOS lados, ignorando `nivel`/el 0.7 fijo de siempre — para
+   *  el modo Dios vs Dios (partido nivel maestro, para mirar rebotes y pases de verdad). */
+  aiSkill?: [number, number]
   /** Segundos. */
   duration: number
   leftHanded?: boolean
@@ -173,7 +177,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     kinds: [o.teams[0].kinds, o.teams[1].kinds],
     names: [o.teams[0].names, o.teams[1].names],
   })
-  const ai = new TeamAI({ skill: [0.7, NIVEL_SKILL[o.nivel]], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
+  const ai = new TeamAI({ skill: o.aiSkill ?? [0.7, NIVEL_SKILL[o.nivel]], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
   const stepper = new FixedStepper()
   const cam = new Camera()
   const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded, buttonsMode: o.controlScheme === "botones" })
@@ -183,6 +187,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   // En el demo (IA vs IA) no hay equipo "propio": festeja parejo.
   const crowd = o.training ? null : new Crowd(sfx, o.demo ? null : 0)
   crowd?.setMusic(o.music ?? "on")
+  // Solo en modo demo: reconoce en vivo las 4 jugadas que enseñan el juego (toque, golazo,
+  // súper tiro, defensa) y recién cuando ya narró las 4 deja pasar el "TOCÁ PARA JUGAR".
+  const demoTutor = o.demo ? new DemoTutor() : null
   const confetti = new Confetti()
   const replayBuf = new ReplayBuffer(2.4)
   let flash: Flash | null = null
@@ -596,6 +603,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
             countEvent(ev)
             sfx.play(ev)
             crowd?.onEvent(ev, world, cam.cx, cam.width)
+            demoTutor?.onEvent(ev, now)
             if (ev.type === "foul") {
               banner = { text: `¡FALTA! Tarjeta azul ${names[ev.side]} #${ev.id.slice(1)}`, until: now + 1900 }
               flash = { color: "#3b82f6", startedAt: now, durationMs: 260 }
@@ -604,7 +612,18 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
               banner = { text: `${names[ev.side]} — combo ${ev.kind === "attack" ? "de ataque" : "defensivo"} armado`, until: now + 1400 }
               navigator.vibrate?.(30)
             } else if (ev.type === "sub") {
-              banner = { text: `Cambio ${names[ev.side]}: entra #${ev.inId.slice(1)}`, until: now + 1400 }
+              // Antes esto era solo un cartelito de texto (1.4s, fácil de perderse con la jugada
+              // en marcha) y encima no decía QUIÉN salía. El pedido es que el cambio automático
+              // por cansancio se VEA: ahora banda más larga con entra/sale, un chispazo del color
+              // del equipo en el punto exacto de la pista donde entró el fresco, y vibración corta
+              // — el mismo lenguaje visual que ya usa un gol, pero más chico.
+              banner = { text: `Cambio ${names[ev.side]}: sale #${ev.outId.slice(1)} · entra #${ev.inId.slice(1)}`, until: now + 2200 }
+              const fresh = world.skaters.find((sk) => sk.id === ev.inId)
+              if (fresh) {
+                const scr = cam.toScreen(fresh.x, fresh.y)
+                confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffffff"], 26)
+              }
+              navigator.vibrate?.(40)
             } else if (ev.type === "penalty") {
               banner = { text: `¡PENAL para ${names[ev.side]}!`, until: now + 2200 }
               flash = { color: "#facc15", startedAt: now, durationMs: 260 }
@@ -739,7 +758,12 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         actionButtons.style.opacity = String(1 - 0.62 * actionButtonsShift)
       }
     }
-    drawHud(ctx, world, { ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo, scorePanelShift }, cssW, cssH)
+    demoTutor?.tick(now)
+    drawHud(ctx, world, {
+      ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo,
+      demoCaption: demoTutor?.caption ?? null, demoReady: demoTutor ? demoTutor.done : true,
+      controlScheme: o.controlScheme ?? "honda", scorePanelShift,
+    }, cssW, cssH)
     if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
     if (o.debug) drawDebug(ctx, fpsSmooth, stepsThisFrame, world)
   }

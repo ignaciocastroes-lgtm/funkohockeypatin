@@ -87,6 +87,9 @@ export const CSS = `
 
 .fp-match{position:absolute;inset:0;background:#050914}
 .fp-hud{position:absolute;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));display:flex;flex-wrap:wrap;justify-content:flex-end;max-width:min(50vw,230px);gap:8px;z-index:5}
+.fp-pause-quick{display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
+.fp-pause-quick button{--c:#fff;width:46px;min-height:46px;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(255,255,255,.06);color:#fff;box-shadow:none;font-size:18px;letter-spacing:0}
+.fp-pause-quick button:hover,.fp-pause-quick button:focus-visible{background:rgba(255,255,255,.14)}
 .fp-hud button{--c:#fff;width:46px;height:46px;min-height:0;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(0,0,0,.55);color:#fff;box-shadow:none;opacity:.7;font-size:18px;letter-spacing:0}
 .fp-hud button.view{font-size:12px;font-weight:800}
 .fp-hud button:hover,.fp-hud button:focus-visible{opacity:1;background:rgba(0,0,0,.8);color:#fff}
