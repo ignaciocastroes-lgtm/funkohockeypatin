@@ -90,3 +90,41 @@ test("dibujo: marcador con puntos y faltas de 3 cifras no se rompe (se topa en 9
   drawHud(ctx, w, opts(0, "L1"), 844, 390)
   assert.deepEqual(bad, [])
 })
+
+test("dibujo: Estadio Aldo Cantoni — números finitos en cancha completa (el caso que más se ve) y en el seguimiento normal, con y sin modo ahorro", () => {
+  for (const [vw, vh] of [[844, 390], [667, 375]] as const) {
+    for (const saver of [false, true]) {
+      const w = createWorld({ goalies: true })
+      w.puck.carrierId = "L1"
+      // "Cancha completa": encuadre FIJO que ve todo el rink de una — el caso real donde se veía
+      // toda la tribuna (y ahora, toda la fachada del Cantoni) de una sola vez.
+      const full = new Camera()
+      full.frame(vw, vh, 46, 20, 10)
+      const { ctx: ctxFull, bad: badFull } = spyCtx()
+      drawScene(ctxFull, w, full, { ...opts(0, "L1"), venue: "cantoni", graphicsSaver: saver })
+      assert.deepEqual(badFull, [], `cancha completa ${vw}x${vh} saver=${saver}`)
+
+      // Cámara de seguimiento normal (zoom cerca de un jugador): la cabecera plegable y los
+      // banderines pueden no entrar en cuadro, pero igual no debería romper nada.
+      const follow = camFor(w, vw, vh)
+      const { ctx: ctxFollow, bad: badFollow } = spyCtx()
+      drawScene(ctxFollow, w, follow, { ...opts(0, "L1"), venue: "cantoni", graphicsSaver: saver })
+      assert.deepEqual(badFollow, [], `seguimiento ${vw}x${vh} saver=${saver}`)
+    }
+  }
+})
+
+test("dibujo: la tribuna genérica y la del Cantoni no comparten caché (no se \"filtra\" el color de una a la otra)", () => {
+  const w = createWorld({ goalies: true })
+  const cam = new Camera()
+  cam.frame(844, 390, 46, 20, 10)
+  const genericCtx = spyCtx()
+  drawScene(genericCtx.ctx, w, cam, { ...opts(0, "L1"), venue: "generic" })
+  const cantoniCtx = spyCtx()
+  drawScene(cantoniCtx.ctx, w, cam, { ...opts(0, "L1"), venue: "cantoni" })
+  const backToGenericCtx = spyCtx()
+  drawScene(backToGenericCtx.ctx, w, cam, { ...opts(0, "L1"), venue: "generic" })
+  assert.deepEqual(genericCtx.bad, [])
+  assert.deepEqual(cantoniCtx.bad, [])
+  assert.deepEqual(backToGenericCtx.bad, [])
+})

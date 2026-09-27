@@ -28,7 +28,7 @@ import type { ShootoutResult, ShootoutState } from "./shootout"
 export type { ShootoutResult } from "./shootout"
 import type { SkaterKind, PuckKind, Side, Surface, World } from "../engine"
 import { EDGE_CHIP_R, drawHud, drawScene, teammateEdgeChips } from "./draw"
-import type { GoalieSaveFX } from "./draw"
+import type { GoalieSaveFX, Venue } from "./draw"
 import { canvasFontFamily, plateSize } from "./cues"
 import { Confetti, ReplayBuffer, SuperTrail, drawFlash, replayFrameAt, replayWorld } from "./effects"
 import type { Flash, GoalReplay } from "./effects"
@@ -57,6 +57,8 @@ export interface MatchOptions {
   teams: [MatchTeam, MatchTeam]
   /** Pista: la del equipo local (localía). */
   surface: Surface
+  /** Venue especial (Aldo Cantoni) — cosmético, ver `Venue` en draw.ts. Por defecto "generic". */
+  venue?: Venue
   /** Peso de la bocha (por defecto "normal") — ver `PUCK_KINDS` en el motor. Pesada = más lenta y
    *  previsible; liviana = más rápida y rebota más. */
   puckKind?: PuckKind
@@ -369,12 +371,15 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     }
     const CHARGE_MS = 1100
     const BTN_SIZE = ACTION_BTN_SIZE
-    const mkButton = (label: string, action: "pase" | "tiro", color: string) => {
+    const mkButton = (label: string, action: "pase" | "pase-fuerte" | "tiro", color: string) => {
       const fill = document.createElement("div")
       fill.style.cssText = `position:absolute;left:0;right:0;bottom:0;height:0%;background:${color};opacity:.5;pointer-events:none;transition:height 60ms linear;mix-blend-mode:screen`
       const btn = document.createElement("button")
       btn.type = "button"
-      btn.setAttribute("aria-label", action === "pase" ? "Pase (mantener carga potencia)" : "Tiro (mantener carga potencia)")
+      btn.setAttribute("aria-label",
+        action === "tiro" ? "Tiro (mantener carga potencia)"
+          : action === "pase-fuerte" ? "Pase fuerte (mantener carga potencia) — directo al mejor compañero, más rápido y más difícil de cortar"
+          : "Pase (mantener carga potencia)")
       btn.style.cssText = `position:relative;overflow:hidden;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
         `border:4px solid ${shadeHex(color, -0.25)};` +
         `background:radial-gradient(circle at 34% 28%, ${shadeHex(color, 0.35)}, ${color} 46%, ${shadeHex(color, -0.35)} 100%);` +
@@ -424,6 +429,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     actionButtons = document.createElement("div")
     actionButtons.style.cssText = "position:absolute;right:14px;bottom:14px;display:flex;gap:14px;z-index:5;transition:opacity 150ms linear"
     actionButtons.appendChild(mkButton("PASE", "pase", "#4ade80"))
+    actionButtons.appendChild(mkButton("FUERTE", "pase-fuerte", "#38bdf8"))
     actionButtons.appendChild(mkButton("TIRO", "tiro", "#facc15"))
     container.appendChild(actionButtons)
   }
@@ -499,6 +505,21 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         const speed = powerFromFlick(1.2 + Math.max(0, Math.min(1, ev.power)) * 4.8)
         const r = assistAim(world, s.id, s.heading, speed)
         if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
+      } else if (ev.action === "pase-fuerte") {
+        // Mismo destino que "pase" (el mejor compañero libre) pero de salida directa y fuerte: no
+        // depende de cuánto se cargó el botón para ser "fuerte" — el medidor solo le agrega un
+        // último empujón (1.4x-1.7x), para que SIEMPRE sea un pase más difícil de cortar que el
+        // suave, no una versión más del mismo gesto.
+        const tid = bestPassTarget(world, s.id)
+        const t = tid ? findSkater(world, tid) : undefined
+        if (!t) return
+        const d0 = Math.hypot(t.x - s.x, t.y - s.y)
+        const flight = Math.min(0.8, d0 / 10)
+        const tx = t.x + t.vx * flight
+        const ty = t.y + t.vy * flight
+        const base = passSpeedFor(Math.hypot(tx - s.x, ty - s.y))
+        const speed = base * (1.4 + Math.max(0, Math.min(1, ev.power)) * 0.3)
+        if (kick(world, s.id, Math.atan2(ty - s.y, tx - s.x), speed)) lockReceiver(t.id)
       } else {
         // Pase automático al mejor compañero (igual que el toque suelto), pero la potencia del pase
         // sí responde al medidor: 0.7x-1.3x la velocidad que ya calcula `passSpeedFor` por distancia.
@@ -736,7 +757,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     }
     const opts = {
       controlledId, humanSide: ((o.demo || o.spectator) ? null : 0) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver,
-      superTrail: superTrail.live(now), goalieSave: saveFX,
+      superTrail: superTrail.live(now), goalieSave: saveFX, venue: o.venue,
     }
 
     // Cancha, joystick y línea de apuntado: viven en el espacio "virtual" horizontal y se rotan 90°
@@ -774,9 +795,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       scorePanelShift += (target - scorePanelShift) * k
 
       if (actionButtons) {
-        // Zona real (pantalla, sin rotar) que ocupan PASE/TIRO: ver el `right:14px;bottom:14px` con
-        // el que se arman más abajo.
-        const btnL = cssW - 14 - ACTION_BTN_SIZE * 2 - 14
+        // Zona real (pantalla, sin rotar) que ocupan PASE/FUERTE/TIRO: ver el `right:14px;bottom:14px`
+        // con el que se arman más abajo (3 botones, 2 espacios de 14px entre ellos).
+        const btnL = cssW - 14 - (ACTION_BTN_SIZE * 3 + 14 * 2)
         const btnT = cssH - 14 - ACTION_BTN_SIZE
         const underButtons = (vx: number, vy: number) => {
           const p = virtualToScreen(vx, vy)

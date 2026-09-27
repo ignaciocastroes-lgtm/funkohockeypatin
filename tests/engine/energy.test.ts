@@ -4,7 +4,7 @@ import {
   RULES, STAMINA, SUPER_SHOT_COST, MATCH,
   createWorld, kick, kickoff, setInput, stepWorld, trySub, FIXED_DT,
 } from "../../lib/engine"
-import type { World } from "../../lib/engine"
+import type { GameEvent, World } from "../../lib/engine"
 import { GOALS, makeWorld, parkOthers, place, run } from "./helpers"
 
 // ---------- energía ----------
@@ -207,6 +207,60 @@ test("atajada: el evento dice de qué arquero fue (side) y hacia qué lado despe
     assert.equal(save.side, 1, "la atajó el arquero visitante (defiende ese arco)")
     assert.ok(Number.isFinite(save.ny))
   }
+})
+
+// ---------- recompensa del arquero: atajar un súper tiro se paga con un súper despeje propio ----------
+
+/** Corre paso a paso y frena justo cuando aparece el primer evento "save" — así se puede leer el
+ *  estado del puck INMEDIATAMENTE después de la atajada, antes de que el despeje-recompensa (a
+ *  toda velocidad) tenga chance de chocar contra algo más y desviarse de nuevo. */
+function runUntilSave(w: World): Extract<GameEvent, { type: "save" }> | null {
+  for (let i = 0; i < Math.round(2 / FIXED_DT); i++) {
+    stepWorld(w, FIXED_DT)
+    const save = w.events.find((e) => e.type === "save")
+    if (save) return save as Extract<GameEvent, { type: "save" }>
+    w.events.length = 0
+  }
+  return null
+}
+
+test("el arquero que ataja un súper tiro devuelve, a su vez, un súper tiro propio (de arco a arco)", () => {
+  const g = GOALS[1]
+  const w = createWorld({ teamSize: 1, goalies: true })
+  place(w, "L1", 26, g.cy)
+  w.puck.carrierId = "L1"
+  w.puck.x = 26; w.puck.y = g.cy
+  assert.ok(kick(w, "L1", Math.atan2(g.cy - w.puck.y, g.lineX - w.puck.x), STAMINA.superShotMinSpeed + 4))
+  assert.equal(w.puck.superShot, true, "el tiro que le llega al arquero debe ser, de entrada, un súper tiro")
+  // Al que tiró, lejos del camino de vuelta: si no, el propio despeje-recompensa lo choca a él antes
+  // de que se pueda medir hacia dónde salió de verdad (pasó en la primera versión de este test).
+  place(w, "L1", 5, 18)
+  place(w, "V1", 5, 2)
+  const save = runUntilSave(w)
+  assert.ok(save, "debería haber atajada dentro de los 2s")
+  assert.equal(save?.goalieSuper, true, "atajar un súper tiro tiene que marcar la recompensa")
+  assert.equal(save?.side, 1)
+  assert.equal(w.puck.superShot, true, "el despeje que sigue TAMBIÉN es un súper tiro (encendido, con estela)")
+  // "de arco a arco": el despeje va hacia el arco del EQUIPO QUE TIRÓ (side 0), no de costado.
+  assert.ok(w.puck.vx < 0, `el despeje debe volver hacia el arco de side 0 (vx negativo), salió ${w.puck.vx}`)
+  assert.ok(Math.hypot(w.puck.vx, w.puck.vy) >= STAMINA.superShotMinSpeed, "el despeje-recompensa tiene que salir a velocidad de súper tiro de verdad")
+})
+
+test("una atajada NORMAL (sin súper tiro de por medio) no dispara la recompensa, pero sí despeja de arco a arco", () => {
+  const g = GOALS[1]
+  const w = createWorld({ teamSize: 1, goalies: true })
+  place(w, "L1", 26, g.cy)
+  w.puck.carrierId = "L1"
+  w.puck.x = 26; w.puck.y = g.cy
+  assert.ok(kick(w, "L1", Math.atan2(g.cy - w.puck.y, g.lineX - w.puck.x), 18))
+  assert.equal(w.puck.superShot, false)
+  place(w, "L1", 5, 18)
+  place(w, "V1", 5, 2)
+  const save = runUntilSave(w)
+  assert.ok(save, "debería haber atajada dentro de los 2s")
+  assert.equal(save?.goalieSuper, undefined)
+  assert.equal(w.puck.superShot, false, "una atajada normal no enciende la pelota")
+  assert.ok(w.puck.vx < 0, `incluso el despeje normal apunta de arco a arco (vx negativo), salió ${w.puck.vx}`)
 })
 
 // ---------- combo de defensa: 3 intercepciones seguidas arman la atajada garantizada ----------

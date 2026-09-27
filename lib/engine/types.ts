@@ -75,8 +75,11 @@ export type GameEvent =
   | { type: "board"; speed: number }
   | { type: "post"; speed: number }
   /** `ny`: componente y (mundo) de la normal de contacto arquero→pelota — hacia qué lado quedó la
-   *  pelota respecto al arquero en el instante de la atajada (para animar la pierna que despeja). */
-  | { type: "save"; speed: number; combo?: boolean; side: Side; ny: number }
+   *  pelota respecto al arquero en el instante de la atajada (para animar la pierna que despeja).
+   *  `goalieSuper`: atajó un súper tiro y el despeje que sigue es, a su vez, un súper tiro propio
+   *  del arquero (ver `world.ts`, sección de porteros) — de arco a arco, con la misma pelota
+   *  "encendida" y estela que un súper tiro cualquiera. */
+  | { type: "save"; speed: number; combo?: boolean; side: Side; ny: number; goalieSuper?: boolean }
   | { type: "deflect"; id: string; speed: number }
   | { type: "foul"; id: string; victim: string; side: Side; impact: number }
   | { type: "return"; id: string }

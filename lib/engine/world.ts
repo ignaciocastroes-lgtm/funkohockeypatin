@@ -840,7 +840,7 @@ function updatePuck(w: World, dt: number) {
 
     // porteros
     for (const g of w.goalies) {
-      const geom = GOALS[g.side]
+      const oppGoal = GOALS[g.side === 0 ? 1 : 0] // el arco RIVAL: adonde apunta cualquier despeje
       const min = g.radius + p.radius
       const dx = p.x - g.x
       const dy = p.y - g.y
@@ -858,28 +858,61 @@ function updatePuck(w: World, dt: number) {
       const rvy = p.vy - g.vy
       const vn = rvx * nx + rvy * ny
       if (vn < 0) {
+        // Si lo que llegaba era un súper tiro, atajarlo se PAGA con el propio súper tiro del
+        // arquero en el despeje que sigue — el único, junto al de los patinadores, capaz de irse de
+        // arco a arco. `wasSuperShot` se lee ANTES de tocar `p.superShot` (el despeje puede volver a
+        // encenderlo él mismo, si corresponde).
+        const wasSuperShot = p.superShot
+        // dirección "arco a arco": del arquero a la boca del arco RIVAL, no un costado cualquiera.
+        const tdx = oppGoal.lineX - g.x
+        const tdy = oppGoal.cy - g.y
+        const td = Math.hypot(tdx, tdy) || 1
+        const aimX = tdx / td
+        const aimY = tdy / td
         // Defensa con 3 toques armados: la próxima llegada a este arquero es atajada garantizada
         // (transmisión), no una resolución normal de física.
         const comboSave = w.defCombo?.side === g.side && w.defCombo.touches >= 3
         if (comboSave) {
-          p.vx = g.vx
-          p.vy = g.vy
           w.defCombo = null
-          emit(w, { type: "save", speed: -vn, combo: true, side: g.side, ny })
+          if (wasSuperShot) {
+            const speed = STAMINA.superShotMinSpeed + 3
+            p.vx = aimX * speed
+            p.vy = aimY * speed
+            p.superShot = true
+            emit(w, { type: "save", speed: -vn, combo: true, side: g.side, ny, goalieSuper: true })
+          } else {
+            // Atajada limpia: no queda picando "a lo que caiga" — sale con un despeje sólido,
+            // siempre igual de firme (es una atajada garantizada, no depende de qué tan fuerte
+            // vino el tiro).
+            const speed = GOALIE.clearSpeed * 1.3
+            p.vx = aimX * speed
+            p.vy = aimY * speed
+            emit(w, { type: "save", speed: -vn, combo: true, side: g.side, ny })
+          }
         } else {
           const e = Math.min(0.95, PUCK.goalieRestitution * pk.restitutionMul)
           p.vx = g.vx + rvx - (1 + e) * vn * nx
           p.vy = g.vy + rvy - (1 + e) * vn * ny
           // Despeje con el palo: un arquero de verdad no deja la bocha picando "a lo que caiga"
-          // contra el cuerpo — la saca de encima hacia el costado (nunca al medio, que sería
-          // regalarla de nuevo) y hacia afuera de su propio arco. Se suma al rebote elástico de
-          // arriba, con más fuerza cuanto más fuerte llegó el tiro.
+          // contra el cuerpo — la saca de encima, apuntando de arco a arco (el único que puede
+          // pegarle así, de punta a punta) — despacio si el tiro llegó suave, muy fuerte si llegó
+          // fuerte. Se suma al rebote elástico de arriba.
           if (-vn > 3) {
-            const clearSide = g.y >= geom.cy ? 1 : -1
-            const clearStrength = clamp(-vn / 14, 0.35, 1)
-            p.vx += -geom.dir * GOALIE.clearSpeed * 0.6 * clearStrength
-            p.vy += clearSide * GOALIE.clearSpeed * clearStrength
-            emit(w, { type: "save", speed: -vn, side: g.side, ny })
+            if (wasSuperShot) {
+              // Recompensa: atajó un súper tiro, despeja con uno propio — reemplaza el rebote de
+              // arriba en vez de sumarse: es un despeje deliberado, no una física de rebote.
+              const speed = STAMINA.superShotMinSpeed + 3
+              p.vx = aimX * speed
+              p.vy = aimY * speed
+              p.superShot = true
+              emit(w, { type: "save", speed: -vn, side: g.side, ny, goalieSuper: true })
+            } else {
+              const clearStrength = clamp(-vn / 14, 0.35, 1)
+              const clearSpeed = GOALIE.clearSpeed * (0.6 + clearStrength * 0.9)
+              p.vx += aimX * clearSpeed
+              p.vy += aimY * clearSpeed
+              emit(w, { type: "save", speed: -vn, side: g.side, ny })
+            }
           }
         }
       }

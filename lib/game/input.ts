@@ -27,9 +27,12 @@ export type ActionEvent =
       strict?: boolean
     }
   | {
-      /** Esquema "botones": pase o tiro por botón, con medidor de potencia (0..1) en vez de gesto. */
+      /** Esquema "botones": pase, pase fuerte o tiro por botón, con medidor de potencia (0..1) en
+       *  vez de gesto. "pase" y "pase-fuerte" apuntan igual (al mejor compañero libre): la
+       *  diferencia es la velocidad de salida — "pase-fuerte" es un pase directo, más difícil de
+       *  cortar, para cuando ya no hace falta el toque suave (un contragolpe, un cambio de frente). */
       kind: "button"
-      action: "pase" | "tiro"
+      action: "pase" | "pase-fuerte" | "tiro"
       power: number
     }
 

@@ -37,6 +37,10 @@ export interface Settings {
    *  mejor en celulares de gama baja. Vive acá (no en la pausa sola) porque también aplica en
    *  el demo de arranque, antes de que exista ningún partido en pausa. */
   graphicsSaver: boolean
+  /** Estadio Aldo Cantoni (San Juan) desbloqueado: se gana ganando la Copa, una sola vez, para
+   *  siempre (no se vuelve a bloquear si después se pierde una Copa nueva). De ahí en más, la
+   *  final de la Copa se juega ahí, y queda disponible para elegir en entrenamiento y en el demo. */
+  cantoniUnlocked: boolean
 }
 
 export interface Saved {
@@ -60,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
   godModeUnlocked: false,
   puckKind: "normal",
   graphicsSaver: false,
+  cantoniUnlocked: false,
 }
 
 /** localStorage si existe y funciona (modo privado, cookies bloqueadas, SSR => null). */
@@ -130,6 +135,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.godModeUnlocked === "boolean") out.settings.godModeUnlocked = s.godModeUnlocked
     if (s.puckKind === "liviana" || s.puckKind === "normal" || s.puckKind === "pesada") out.settings.puckKind = s.puckKind
     if (typeof s.graphicsSaver === "boolean") out.settings.graphicsSaver = s.graphicsSaver
+    if (typeof s.cantoniUnlocked === "boolean") out.settings.cantoniUnlocked = s.cantoniUnlocked
     out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)
   } catch {

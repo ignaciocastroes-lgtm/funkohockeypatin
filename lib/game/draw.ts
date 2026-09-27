@@ -9,6 +9,12 @@ import type { TrailPoint } from "./effects"
  *  `drawScene`). `ny` es la componente y de la normal de contacto — hacia qué lado patea. */
 export interface GoalieSaveFX { startedAt: number; ny: number }
 
+/** Venue especial (cosmético — no toca física ni reglas): el Estadio Aldo Cantoni, San Juan,
+ *  sede de más mundiales de hockey sobre patines que ningún otro recinto del mundo. Se desbloquea
+ *  ganando la Copa (ver `Settings.cantoniUnlocked` en `storage.ts`); de ahí en más se usa para la
+ *  final de la Copa, y queda disponible para elegir en entrenamiento y en el demo. */
+export type Venue = "generic" | "cantoni"
+
 export interface DrawOptions {
   controlledId: string | null
   /** Lado del equipo humano (0), o null si no hay humano (demo): activa el disco de "mi equipo". */
@@ -51,6 +57,8 @@ export interface DrawOptions {
   /** Última atajada de cada arquero (índice = side), para animar la pierna de despeje mientras
    *  esté "fresca". null/ausente = arquero en reposo (dos pies quietos, sin patada). */
   goalieSave?: (GoalieSaveFX | null)[]
+  /** Venue especial (Aldo Cantoni) en vez de la tribuna genérica. Por defecto "generic". */
+  venue?: Venue
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
@@ -405,24 +413,43 @@ function drawHair(ctx: CanvasRenderingContext2D, style: 0 | 1 | 2 | 3, hc: strin
 }
 
 /**
- * Disco de piso de un compañero de equipo: una marca chata, del color flúor del país, pintada en
- * el suelo bajo el jugador — no un resplandor sobre el cuerpo. Se pinta ANTES que patines/sombra/
- * cuerpo, así el personaje queda siempre encima, entero, sin que el disco lo tape ni lo recorte.
- * Estático (sin pulso ni fundido de entrada/salida): a propósito, para que se perciba de reojo, sin
- * tener que enfocar la vista en él — el que pulsa es el marcador de "lo controlás", no este.
+ * Disco de piso de un compañero de equipo: un CÍRCULO (no una elipse achatada — así se lee "disco
+ * bajo el jugador" y no una sombra rara) con un tramado flúor semitransparente adentro, del color
+ * del país. La idea: que el jugador humano pueda barrer con la vista a todo su equipo por el
+ * tramado/color, sin tener que fijarse en el peinado de cada uno para saber quién es quién (eso no
+ * siempre ayuda). Bien grande — se lee de reojo — y SIEMPRE por debajo de patines/sombra/cuerpo
+ * (se pinta antes), así el personaje no queda nunca tapado ni recortado por su propio disco.
  */
 function drawFloorDisc(ctx: CanvasRenderingContext2D, r: number, color: string) {
-  const rx = r * 1.8
-  const ry = rx * 0.62 // achatado: se lee como un aro en el piso, no como una esfera flotando
+  const R = r * 2.2 // círculo real, más grande que antes: se nota bien por el rabillo del ojo
+  const cy = r * 0.15 // centro apenas por debajo del jugador (el disco "empieza" bajo los pies)
   ctx.save()
+  ctx.translate(0, cy)
   ctx.beginPath()
-  ctx.ellipse(0, r * 0.18, rx, ry, 0, 0, Math.PI * 2)
-  ctx.fillStyle = rgba(color, 0.22)
+  ctx.arc(0, 0, R, 0, Math.PI * 2)
+  // Base floja: sin esto el tramado de abajo se ve "flotando" sin nada detrás.
+  ctx.fillStyle = rgba(color, 0.09)
   ctx.fill()
-  ctx.lineWidth = 0.08
+  // Tramado (cruzado, dos diagonales) flúor semitransparente — recortado al círculo con clip(),
+  // así ninguna línea se sale de la marca. Estático: sin animación ni pulso, a propósito (ver
+  // `Look.mine`: esto es para el rabillo del ojo, no para llamar la atención).
+  ctx.save()
+  ctx.clip()
+  ctx.strokeStyle = rgba(color, 0.5)
+  ctx.lineWidth = 0.045
+  const step = R * 0.42
+  for (let off = -2 * R; off <= 2 * R; off += step) {
+    ctx.beginPath(); ctx.moveTo(off - R, -R); ctx.lineTo(off + R, R); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(off - R, R); ctx.lineTo(off + R, -R); ctx.stroke()
+  }
+  ctx.restore()
+  // Aro neón del borde, con un resplandor angosto — el "flúor" real de la marca.
+  ctx.lineWidth = 0.09
   ctx.strokeStyle = color
   ctx.shadowColor = color
-  ctx.shadowBlur = 7
+  ctx.shadowBlur = 8
+  ctx.beginPath()
+  ctx.arc(0, 0, R, 0, Math.PI * 2)
   ctx.stroke()
   ctx.restore()
 }
@@ -683,37 +710,58 @@ const FAN_SPACING = 0.55
 /** Modo ahorro: separación más ancha (menos hinchas) y sin banderitas — ver `drawCrowdStands`. */
 const FAN_SPACING_SAVER = 0.95
 const FAN_PALETTE = ["#f97316", "#22d3ee", "#facc15", "#a855f7", "#ef4444", "#4ade80", "#e2e8f0", "#38bdf8"]
-/** Cuántos escalones de opacidad se agrupan al dibujar (ver `drawCrowdStands`): más escalones =
- *  más fiel al brillo continuo original, menos = menos cambios de estado en el canvas por cuadro. */
+/**
+ * Antes: TODO esto se recalculaba de cero en cada cuadro — la grilla entera de hinchas (con sus
+ * hashes), agrupados en `Map`s y arrays nuevos, 60 veces por segundo. Con la cámara siguiendo la
+ * jugada de cerca el rectángulo visible es chico y no se nota; pero en "cancha completa" (encuadre
+ * FIJO, ver `Camera.frame`) se ve toda la tribuna a la vez — mucho más punto, mismo trabajo repetido
+ * cuadro a cuadro sin necesidad, porque el rectángulo visible NO CAMBIA de un cuadro al otro en esa
+ * vista. Eso generaba, cuadro tras cuadro, un monton de arrays y un `Map` nuevos — más basura de la
+ * que puede procesar el recolector sin que se note, sobre todo esos primeros cuadros con la tribuna
+ * entera recién visible (de ahí el traspié de un par de segundos al cambiar a cancha completa, en
+ * cualquier equipo, potente o no: es un problema de cuánta basura se genera por cuadro, no de cuánto
+ * músculo tiene la GPU).
+ *
+ * Ahora se cachea la capa "de layout" (posición base, color, a quién le toca bandera) y se reconstruye
+ * SOLO cuando cambia el rectángulo visible de la cámara (o la separación/banderitas/escudos) —
+ * `crowdLayoutFor` abajo. Lo único que se recalcula de verdad cada cuadro es el rebote (un seno por
+ * punto, ya cacheado con su fase) y el dibujo en sí.
+ */
 const FAN_ALPHA_BUCKETS = 5
 function fanHash(i: number, j: number): number {
   const h = Math.sin(i * 127.1 + j * 311.7) * 43758.5453
   return h - Math.floor(h)
 }
-/**
- * Antes: un `beginPath/arc/fill` (y a veces un cambio de `font`) POR HINCHA, cada cuadro — con la
- * tribuna llena eran cientos de llamadas de dibujo solo para esto, el gasto más alto de gráficos en
- * el juego. Ahora se agrupan los puntos por color y franja de opacidad (`FAN_ALPHA_BUCKETS`) en un
- * solo `Path2D` por grupo: se pasa de ~cientos de `fill()` por cuadro a unas ~40. El brillo
- * individual de cada hincha se pierde un poco de granularidad (5 escalones en vez de continuo) pero
- * a simple vista no se nota. En modo ahorro (`saver`), además: menos densidad y sin banderitas (el
- * `fillText` de emoji es lo más caro de todo esto, más que los puntos).
- */
-function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean) {
-  const spacing = saver ? FAN_SPACING_SAVER : FAN_SPACING
+
+interface CrowdDot { x: number; baseY: number; phase: number; weight: number }
+interface CrowdBucket { color: string; alpha: number; dots: CrowdDot[] }
+interface CrowdFlag extends CrowdDot { crest: string }
+interface CrowdLayout { key: string; buckets: CrowdBucket[]; flags: CrowdFlag[] }
+
+let crowdLayoutCache: CrowdLayout | null = null
+
+/** Firma de qué tan lejos hay que estar (en fracción de `spacing`) para que valga la pena reconstruir
+ *  el layout: si la cámara se movió menos que esto, la grilla visible es la misma en la práctica. */
+const CROWD_CACHE_GRID = 0.4
+
+function crowdLayout(cam: Camera, spacing: number, saver: boolean, crests: [string, string], palette: string[], excludeBand: number | null): CrowdLayout {
+  const round = (v: number) => Math.round(v / (spacing * CROWD_CACHE_GRID)) * spacing * CROWD_CACHE_GRID
   const x0 = cam.cx - cam.width / 2, x1 = cam.cx + cam.width / 2
   const y0 = cam.cy - cam.height / 2, y1 = cam.cy + cam.height / 2
+  const key = `${round(x0)}|${round(x1)}|${round(y0)}|${round(y1)}|${spacing}|${saver}|${crests[0]}|${crests[1]}|${palette.join(",")}|${excludeBand}`
+  if (crowdLayoutCache && crowdLayoutCache.key === key) return crowdLayoutCache
+
   const bands = [
-    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: -STANDS_DEPTH, by1: 0 }, // arriba
-    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: RINK.width, by1: RINK.width + STANDS_DEPTH }, // abajo
-    { bx0: -STANDS_DEPTH, bx1: 0, by0: 0, by1: RINK.width }, // izquierda
-    { bx0: RINK.length, bx1: RINK.length + STANDS_DEPTH, by0: 0, by1: RINK.width }, // derecha
+    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: -STANDS_DEPTH, by1: 0 }, // arriba (0)
+    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: RINK.width, by1: RINK.width + STANDS_DEPTH }, // abajo (1)
+    { bx0: -STANDS_DEPTH, bx1: 0, by0: 0, by1: RINK.width }, // izquierda (2)
+    { bx0: RINK.length, bx1: RINK.length + STANDS_DEPTH, by0: 0, by1: RINK.width }, // derecha (3)
   ]
-  const bob = 0.05 + 0.18 * Math.max(0, Math.min(1, excitement))
-  // bucket key = colorIndex * FAN_ALPHA_BUCKETS + alphaBucket
-  const dots = new Map<number, Array<[number, number]>>()
-  const flags: Array<[number, number, string]> = []
-  for (const b of bands) {
+  const dotsByKey = new Map<number, CrowdDot[]>()
+  const flags: CrowdFlag[] = []
+  for (let bandIdx = 0; bandIdx < bands.length; bandIdx++) {
+    if (bandIdx === excludeBand) continue // esta banda la dibuja otra cosa (ver `drawFoldableEnd`)
+    const b = bands[bandIdx]
     const cx0 = Math.max(b.bx0, x0 - spacing), cx1 = Math.min(b.bx1, x1 + spacing)
     const cy0 = Math.max(b.by0, y0 - spacing), cy1 = Math.min(b.by1, y1 + spacing)
     if (cx1 <= cx0 || cy1 <= cy0) continue
@@ -726,30 +774,44 @@ function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement:
         const fy = j * spacing + (fanHash(j, i) - 0.5) * 0.2
         if (fx < b.bx0 || fx > b.bx1 || fy < b.by0 || fy > b.by1) continue
         const phase = h * Math.PI * 2
-        const yy = fy - Math.abs(Math.sin(now * 3.1 + phase)) * bob * (0.5 + 0.5 * fanHash(j, i))
-        // Una fracción chica de la tribuna, banderita en vez de puntito — no todos, se recarga la
-        // vista (y en modo ahorro, directamente ninguna: es lo más caro de dibujar de toda la tribuna).
+        const weight = 0.5 + 0.5 * fanHash(j, i)
         if (!saver && fanHash(i + 7, j + 3) < 0.1) {
-          flags.push([fx, yy, crests[fanHash(i + 3, j + 7) < 0.5 ? 0 : 1]])
+          flags.push({ x: fx, baseY: fy, phase, weight, crest: crests[fanHash(i + 3, j + 7) < 0.5 ? 0 : 1] })
           continue
         }
-        const colorIdx = Math.floor(h * FAN_PALETTE.length) % FAN_PALETTE.length
+        const colorIdx = Math.floor(h * palette.length) % palette.length
         const alphaBucket = Math.floor((0.5 + 0.28 * fanHash(i + 1, j + 1)) * FAN_ALPHA_BUCKETS)
-        const key = colorIdx * FAN_ALPHA_BUCKETS + alphaBucket
-        let arr = dots.get(key)
-        if (!arr) { arr = []; dots.set(key, arr) }
-        arr.push([fx, yy])
+        const bucketKey = colorIdx * FAN_ALPHA_BUCKETS + alphaBucket
+        let arr = dotsByKey.get(bucketKey)
+        if (!arr) { arr = []; dotsByKey.set(bucketKey, arr) }
+        arr.push({ x: fx, baseY: fy, phase, weight })
       }
     }
   }
+  const buckets: CrowdBucket[] = []
+  for (const [bucketKey, dots] of dotsByKey) {
+    const colorIdx = Math.floor(bucketKey / FAN_ALPHA_BUCKETS)
+    const alphaBucket = bucketKey % FAN_ALPHA_BUCKETS
+    buckets.push({ color: palette[colorIdx], alpha: (alphaBucket + 0.5) / FAN_ALPHA_BUCKETS, dots })
+  }
+  const layout: CrowdLayout = { key, buckets, flags }
+  crowdLayoutCache = layout
+  return layout
+}
+
+/** `palette`/`excludeBand` son solo para el Cantoni (ver `drawCantoniArena`): la tribuna genérica
+ *  siempre llama esto con `FAN_PALETTE` y sin excluir ninguna banda. */
+function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean, palette: string[] = FAN_PALETTE, excludeBand: number | null = null) {
+  const spacing = saver ? FAN_SPACING_SAVER : FAN_SPACING
+  const { buckets, flags } = crowdLayout(cam, spacing, saver, crests, palette, excludeBand)
+  const bob = 0.05 + 0.18 * Math.max(0, Math.min(1, excitement))
+  const bounce = (d: CrowdDot) => d.baseY - Math.abs(Math.sin(now * 3.1 + d.phase)) * bob * d.weight
   ctx.save()
-  for (const [key, pts] of dots) {
-    const colorIdx = Math.floor(key / FAN_ALPHA_BUCKETS)
-    const alphaBucket = key % FAN_ALPHA_BUCKETS
-    ctx.fillStyle = FAN_PALETTE[colorIdx]
-    ctx.globalAlpha = (alphaBucket + 0.5) / FAN_ALPHA_BUCKETS
+  for (const bucket of buckets) {
+    ctx.fillStyle = bucket.color
+    ctx.globalAlpha = bucket.alpha
     ctx.beginPath()
-    for (const [px, py] of pts) { ctx.moveTo(px + 0.15, py); ctx.arc(px, py, 0.15, 0, Math.PI * 2) }
+    for (const d of bucket.dots) { const yy = bounce(d); ctx.moveTo(d.x + 0.15, yy); ctx.arc(d.x, yy, 0.15, 0, Math.PI * 2) }
     ctx.fill()
   }
   if (flags.length) {
@@ -757,10 +819,117 @@ function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement:
     ctx.font = `0.5px ${fontFamily}, system-ui`
     ctx.textAlign = "center"
     ctx.textBaseline = "middle"
-    for (const [fx, fy, crest] of flags) ctx.fillText(crest, fx, fy)
+    for (const f of flags) ctx.fillText(f.crest, f.x, bounce(f))
   }
   ctx.restore()
 }
+
+/**
+ * Estadio Aldo Cantoni (San Juan): el recinto que más mundiales de hockey sobre patines albergó en
+ * el mundo (1970·1978·1989·2011·2022), "la Meca del hockey". Estilizado a propósito, no una foto
+ * ni un plano a escala — coherente con el resto del arte del juego (formas simples, sin texturas):
+ * tribuna propia (azul/blanco, no el arcoíris de hinchas sueltos del genérico), la cabecera
+ * plegable real de la banda norte, techo cubierto (el Cantoni es un estadio CERRADO, a diferencia
+ * de la cancha genérica a cielo abierto), pantalla de ingreso y los banderines de sus mundiales.
+ * Se desbloquea ganando la Copa (ver `Settings.cantoniUnlocked`) — de ahí en más, la final de
+ * la Copa se juega acá, y queda disponible para elegir en entrenamiento y en el demo.
+ */
+const CANTONI_PALETTE = ["#1d4ed8", "#eff6ff", "#1e3a8a", "#bfdbfe"]
+/** Banda de la cabecera plegable real (índice de `crowdLayout`): la izquierda, detrás del arco del
+ *  lado 0 — cualquiera de las 4 serviría, esta ya queda fija así no "salta" de lado según el side. */
+const CANTONI_FOLD_BAND = 2
+const WORLD_CUP_YEARS = ["1970", "1978", "1989", "2011", "2022"]
+
+function drawFoldableEnd(ctx: CanvasRenderingContext2D) {
+  // La cabecera norte real se pliega para liberar espacio (recitales, etc.) — acá se representa
+  // como paneles sólidos apilados (persiana), no puntitos de gente: es la seña visual de "esta
+  // banda es distinta a las otras 3", y de paso ahorra el costo de la grilla de hinchas ahí.
+  const panels = 14
+  const h = RINK.width / panels
+  ctx.save()
+  for (let i = 0; i < panels; i++) {
+    const y0 = i * h
+    ctx.fillStyle = i % 2 === 0 ? "#1e3a8a" : "#1d4ed8"
+    ctx.fillRect(-STANDS_DEPTH, y0 + h * 0.06, STANDS_DEPTH * 0.92, h * 0.88)
+  }
+  ctx.restore()
+}
+
+function drawRoofTruss(ctx: CanvasRenderingContext2D, cam: Camera) {
+  // Estadio CERRADO (a diferencia del genérico): un borde oscuro con vigas cortas — no un techo en
+  // 3D de verdad (esto es 2D cenital), solo la silueta que dice "acá arriba hay una estructura".
+  const x0 = cam.cx - cam.width / 2 - STANDS_DEPTH * 1.6, x1 = cam.cx + cam.width / 2 + STANDS_DEPTH * 1.6
+  ctx.save()
+  ctx.strokeStyle = "rgba(148,163,184,0.55)"
+  ctx.lineWidth = 0.05
+  const beamGap = 1.6
+  const i0 = Math.floor(x0 / beamGap), i1 = Math.ceil(x1 / beamGap)
+  for (const yEdge of [-STANDS_DEPTH - 0.15, RINK.width + STANDS_DEPTH + 0.15]) {
+    ctx.beginPath()
+    ctx.moveTo(x0, yEdge); ctx.lineTo(x1, yEdge)
+    ctx.stroke()
+    for (let i = i0; i <= i1; i++) {
+      const bx = i * beamGap
+      ctx.beginPath()
+      ctx.moveTo(bx, yEdge); ctx.lineTo(bx + (yEdge < 0 ? 0.5 : -0.5), yEdge + (yEdge < 0 ? -0.5 : 0.5))
+      ctx.stroke()
+    }
+  }
+  ctx.restore()
+}
+
+function drawChampionshipBanners(ctx: CanvasRenderingContext2D, fontFamily: string) {
+  // Banderines de sus 5 mundiales — un guiño para quien reconoce el Cantoni, no algo que haga
+  // falta leer para jugar. Posición fija en el mundo (no dependen de la cámara): son pocos, no
+  // hace falta la maquinaria de caché de la tribuna para esto.
+  const n = WORLD_CUP_YEARS.length
+  const marginX = 5
+  const step = (RINK.length - marginX * 2) / (n - 1)
+  ctx.save()
+  ctx.font = `0.62px ${fontFamily}, system-ui`
+  ctx.textAlign = "center"
+  ctx.textBaseline = "middle"
+  for (let i = 0; i < n; i++) {
+    const x = marginX + i * step
+    const y = -STANDS_DEPTH + 0.55
+    ctx.fillStyle = i % 2 === 0 ? "#1d4ed8" : "#f8fafc"
+    ctx.beginPath()
+    ctx.moveTo(x - 0.7, y - 0.42); ctx.lineTo(x + 0.7, y - 0.42); ctx.lineTo(x, y + 0.5); ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = i % 2 === 0 ? "#f8fafc" : "#1d4ed8"
+    ctx.fillText(WORLD_CUP_YEARS[i], x, y - 0.16)
+  }
+  ctx.restore()
+}
+
+function drawEntranceScreen(ctx: CanvasRenderingContext2D, now: number, fontFamily: string) {
+  // "La imponente pantalla en su ingreso" — un rectángulo con resplandor en la esquina de la
+  // cabecera plegable, con un parpadeo lento (no tan rápido como para marear). Puramente cosmético.
+  const cx = -STANDS_DEPTH * 0.5, cy = -STANDS_DEPTH * 0.5
+  const w = 1.7, h = 1.0
+  const flicker = 0.75 + 0.25 * Math.sin(now * 1.3)
+  ctx.save()
+  ctx.shadowColor = "#38bdf8"
+  ctx.shadowBlur = 6
+  ctx.fillStyle = "#0f172a"
+  ctx.fillRect(cx - w / 2, cy - h / 2, w, h)
+  ctx.globalAlpha = flicker
+  ctx.fillStyle = "#38bdf8"
+  ctx.font = `700 0.34px ${fontFamily}, system-ui`
+  ctx.textAlign = "center"
+  ctx.textBaseline = "middle"
+  ctx.fillText("ARDISPORT", cx, cy)
+  ctx.restore()
+}
+
+function drawCantoniArena(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean) {
+  drawCrowdStands(ctx, cam, excitement, now, crests, fontFamily, saver, CANTONI_PALETTE, CANTONI_FOLD_BAND)
+  drawFoldableEnd(ctx)
+  drawRoofTruss(ctx, cam)
+  if (!saver) drawChampionshipBanners(ctx, fontFamily)
+  drawEntranceScreen(ctx, now, fontFamily)
+}
+
 
 export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, o: DrawOptions) {
   const { alpha } = o
@@ -772,7 +941,8 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   ctx.scale(cam.ppm, cam.ppm)
   ctx.translate(-cam.cx, -cam.cy)
 
-  drawCrowdStands(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000, o.crests, o.fontFamily, !!o.graphicsSaver)
+  if (o.venue === "cantoni") drawCantoniArena(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000, o.crests, o.fontFamily, !!o.graphicsSaver)
+  else drawCrowdStands(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000, o.crests, o.fontFamily, !!o.graphicsSaver)
   drawFloor(ctx, w.surface, cam)
   drawMarkings(ctx)
   drawGoals(ctx)

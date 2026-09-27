@@ -2,6 +2,7 @@ import { mountMatch } from "../game/match"
 import { digitFromCode } from "../game/input"
 import { shouldShowCupTutorial } from "./tutorial"
 import type { MatchHandle, MatchOptions, MatchResult, Nivel } from "../game/match"
+import type { Venue } from "../game/draw"
 import { DURATIONS, allTeams, load, normalize, save } from "./storage"
 import type { Saved, Settings } from "./storage"
 import { CSS } from "./styles"
@@ -267,7 +268,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         segmented<string>("Dedos", "hand", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => { s.leftHanded = v === "l"; persist(); render() }),
         segmented<"honda" | "botones">("Control", "control-scheme", [
           { value: "honda", label: "Honda (estirar y soltar)" },
-          { value: "botones", label: "Botones (stick + pase/tiro)" },
+          { value: "botones", label: "Botones (stick + pase/pase fuerte/tiro)" },
         ], s.controlScheme, (v) => { s.controlScheme = v; persist(); render() }),
         segmented<string>("Sonido", "snd", [{ value: "on", label: "Con sonido" }, { value: "off", label: "Silencio" }], s.sound ? "on" : "off", (v) => { s.sound = v === "on"; persist(); render() }),
         segmented<Settings["music"]>("Música de fondo", "music", [{ value: "on", label: "Prendida" }, { value: "low", label: "Atenuada" }, { value: "off", label: "Apagada" }], s.music, (v) => { s.music = v; persist(); render() }),
@@ -644,8 +645,11 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
     const mo = teamMatchOptions(a.id, b.id)
+    // Una vez desbloqueado, el demo (que es la vidriera del juego) siempre muestra el Cantoni.
+    const cantoniDemo = saved.settings.cantoniUnlocked
     const m = mountMatch(wrap, {
       ...mo,
+      ...(cantoniDemo ? { surface: "madera" as Surface, venue: "cantoni" as Venue } : {}),
       demo: true,
       onDemoTap: () => { if (demoFromBoot) { stopMatch(); go("menu") } else startMatch() },
       onEnd: () => {
@@ -763,6 +767,8 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   ]
   let trainingLevel: "basico" | "medio" | "experto" = "basico"
   let trainingSurface: Surface = teamById(saved.settings.localId).surface
+  /** Solo tiene efecto si `Settings.cantoniUnlocked` — el toggle ni se muestra si no. */
+  let trainingVenue: Venue = "generic"
 
   function trainingScreen(): HTMLElement {
     const lvl = TRAINING_LEVELS.find((l) => l.value === trainingLevel) ?? TRAINING_LEVELS[0]
@@ -770,6 +776,15 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       topBar("ENTRENAMIENTO", "#9ca3af", () => go("menu")),
       h("section", { class: "fp-panel" },
         segmented<Surface>("Pista", "train-surf", SURFACES.map((v) => ({ value: v, label: SURFACE_LABEL[v] })), trainingSurface, (v) => { trainingSurface = v; render() }),
+        saved.settings.cantoniUnlocked
+          ? segmented<Venue>("Estadio", "train-venue", [
+              { value: "generic", label: "Cancha común" },
+              { value: "cantoni", label: "🏟️ Aldo Cantoni" },
+            ], trainingVenue, (v) => { trainingVenue = v; render() })
+          : null,
+        trainingVenue === "cantoni"
+          ? h("p", { class: "fp-note" }, "El Cantoni tiene piso de parquet (madera) real — se juega con esa pista, sin importar lo que elijas arriba.")
+          : null,
       ),
       h("section", { class: "fp-panel" },
         h("p", { class: "fp-note" }, "Practicá tiros solo, sin rival. Elegí el nivel: cada uno suma arquero y una bocha distinta."),
@@ -797,9 +812,11 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
     const mo = matchOptions()
+    const cantoni = saved.settings.cantoniUnlocked && trainingVenue === "cantoni"
     const m = mountMatch(wrap, {
       ...mo,
-      surface: trainingSurface,
+      surface: cantoni ? "madera" : trainingSurface,
+      venue: cantoni ? "cantoni" : "generic",
       puckKind,
       duration: 600,
       training: { goalie, penalties },
@@ -836,8 +853,12 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const wrap = h("div", { class: "fp-match" })
     view.replaceChildren(wrap)
     const mo = teamMatchOptions(home, away)
+    // La final, una vez desbloqueado el Cantoni, se juega SIEMPRE ahí — parquet real (de ahí el
+    // "madera" fijo, sin importar la cancha de local de ninguno de los dos finalistas).
+    const cantoniFinal = which === "final" && saved.settings.cantoniUnlocked
     const m = mountMatch(wrap, {
       ...mo,
+      ...(cantoniFinal ? { surface: "madera" as Surface, venue: "cantoni" as Venue } : {}),
       onEnd: (r) => {
         if (r.score[0] === r.score[1]) {
           startShootout(wrap, which, home, away, r.score)
@@ -912,14 +933,20 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     }
 
     saved.cup = after
+    const champion = after.championId
+    // El Cantoni se desbloquea la primera vez que se gana una Copa — una sola vez, para siempre.
+    const justUnlockedCantoni = !!champion && !saved.settings.cantoniUnlocked
+    if (justUnlockedCantoni) saved.settings.cantoniUnlocked = true
     persist()
     const winnerId = r.score[0] > r.score[1] ? home : away
     const winnerT = teamById(winnerId)
-    const champion = after.championId
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Fin del partido de Copa", style: "max-width:520px" },
       champion ? celebrationScene(teamById(champion)) : h("p", { class: "fp-result fp-arcade", style: "color:#facc15" }, "AVANZA"),
       h("div", { class: "fp-score" }, h("span", { style: `color:${lc}` }, String(r.score[0])), h("span", { style: "font-size:.6em;opacity:.7" }, "-"), h("span", { style: `color:${vc}` }, String(r.score[1]))),
       h("p", { style: "margin:0;text-align:center;font-size:14px" }, champion ? `${teamById(champion).name} se queda con la Copa.` : `${winnerT.name} pasa a la siguiente ronda.`),
+      justUnlockedCantoni
+        ? h("p", { style: "margin:0;text-align:center;font-size:13px;color:#38bdf8" }, "🏟️ Desbloqueaste el Estadio Aldo Cantoni — de ahora en más, ahí se juega la final de la Copa (y ya está disponible en entrenamiento y en el demo).")
+        : null,
       h("div", { class: "fp-row" },
         h("button", { class: "fp-btn solid", "data-key": "cup", onclick: () => { stopMatch(); go("cup") } }, champion ? "Ver Copa" : "Siguiente partido"),
         h("button", { class: "fp-btn gr", "data-key": "menu", onclick: () => { stopMatch(); go("menu") } }, "Menú"),
@@ -1132,7 +1159,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       }),
       segmented<"honda" | "botones">("Esquema", "scheme-pause", [
         { value: "honda", label: "Honda (estirar y soltar)" },
-        { value: "botones", label: "Botones (stick + pase/tiro)" },
+        { value: "botones", label: "Botones (stick + pase/pase fuerte/tiro)" },
       ], s.controlScheme, (v) => {
         if (v === s.controlScheme) return
         showDialog("¿Cambiar de esquema de control?", "Esto reinicia el partido — no hay forma de cambiar los botones en pantalla sin volver a armar la cancha.", [
