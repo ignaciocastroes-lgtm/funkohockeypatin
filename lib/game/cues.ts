@@ -76,6 +76,58 @@ export function auraColor(teamColor: string, floorBase: string): string {
   return c
 }
 
+function hexToHsl(hex: string): [number, number, number] {
+  const [r8, g8, b8] = rgb(hex)
+  const r = r8 / 255, g = g8 / 255, b = b8 / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  if (max === min) return [0, 0, l]
+  const d = max - min
+  const s = d / (1 - Math.abs(2 * l - 1))
+  let h: number
+  if (max === r) h = ((g - b) / d) % 6
+  else if (max === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  h *= 60
+  if (h < 0) h += 360
+  return [h, s, l]
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = l - c / 2
+  let [r, g, b] = [0, 0, 0]
+  if (h < 60) [r, g, b] = [c, x, 0]
+  else if (h < 120) [r, g, b] = [x, c, 0]
+  else if (h < 180) [r, g, b] = [0, c, x]
+  else if (h < 240) [r, g, b] = [0, x, c]
+  else if (h < 300) [r, g, b] = [x, 0, c]
+  else [r, g, b] = [c, 0, x]
+  const to = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0")
+  return `#${to(r)}${to(g)}${to(b)}`
+}
+
+/** Saturación del disco de piso: alta a propósito — es una marca de piso "fluorescente", no el
+ *  color de camiseta real del equipo (ese lo lleva puesto el propio jugador). */
+export const NEON_SATURATION = 0.92
+
+/**
+ * Color "neón" del disco de piso de un compañero: el MATIZ del equipo (así el disco de Brasil se
+ * lee amarillo, el de Chile rojo, etc. — identidad de país) llevado a saturación y brillo altos,
+ * como un aro fluorescente pintado en el piso. Igual que `auraColor`, se prueba a distintos brillos
+ * hasta separarse bien del color de la pista — un disco flúor que se confunde con el piso no sirve.
+ */
+export function neonColor(teamColor: string, floorBase: string): string {
+  const [h] = hexToHsl(teamColor)
+  let c = teamColor
+  for (const l of [0.6, 0.68, 0.76, 0.84, 0.9]) {
+    c = hslToHex(h, NEON_SATURATION, l)
+    if (colorDistance(c, floorBase) >= AURA_MIN_CONTRAST) return c
+  }
+  return c
+}
+
 export interface Rect { x0: number; y0: number; x1: number; y1: number }
 
 /** Tamaño de la placa del marcador (compartido con drawHud para que ambos coincidan). */

@@ -45,7 +45,7 @@ test("dibujo: los 4 peinados se dibujan con números finitos a cualquier zoom", 
     for (const ppm of [8, 22, 60, 200]) {
       const { ctx, bad } = spyCtx()
       const sk = { id, side: 0, x: 3, y: 4, px: 3, py: 4, vx: 1, vy: 0, radius: 0.5, heading: 1.1, stickAngle: 2, stamina: 60, isCaptain: i % 7 === 0 } as never
-      drawSkater(ctx, sk, "#ffdf00", 0.5, false, false, 0, { mine: true, aura: "#fff", cue: "#facc15", passTarget: i % 2 === 0, ppm })
+      drawSkater(ctx, sk, "#ffdf00", 0.5, false, false, 0, { mine: true, disc: "#fff", cue: "#facc15", passTarget: i % 2 === 0, ppm })
       assert.deepEqual(bad, [], `${id} (estilo ${st}) a ppm ${ppm}`)
     }
   }
@@ -56,7 +56,7 @@ test("dibujo: el pelo es estable (mismo jugador, mismos trazos, cuadro a cuadro)
   const draw = () => {
     const { ctx, nums } = spyCtx()
     const sk = { id: "L2", side: 0, x: 3, y: 4, px: 3, py: 4, vx: 0, vy: 0, radius: 0.5, heading: 0.3, stickAngle: 2, stamina: 100, isCaptain: false } as never
-    drawSkater(ctx, sk, "#fff", 0, false, false, 0, { mine: false, aura: "#fff", cue: "#facc15", passTarget: false, ppm: 30 })
+    drawSkater(ctx, sk, "#fff", 0, false, false, 0, { mine: false, disc: "#fff", cue: "#facc15", passTarget: false, ppm: 30 })
     return nums.join(",")
   }
   assert.equal(draw(), draw())

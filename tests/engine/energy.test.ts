@@ -2,7 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import {
   RULES, STAMINA, SUPER_SHOT_COST, MATCH,
-  createWorld, kick, setInput, stepWorld, trySub, FIXED_DT,
+  createWorld, kick, kickoff, setInput, stepWorld, trySub, FIXED_DT,
 } from "../../lib/engine"
 import type { World } from "../../lib/engine"
 import { GOALS, makeWorld, parkOthers, place, run } from "./helpers"
@@ -33,6 +33,36 @@ test("super tiro: cuesta la mitad del tanque", () => {
   assert.ok(kick(w, "L1", 0, STAMINA.superShotMinSpeed + 4))
   assert.ok(Math.abs(s.stamina - (STAMINA.max - SUPER_SHOT_COST)) < 0.01, `stamina tras el super tiro: ${s.stamina}`)
   assert.ok(Math.hypot(w.puck.vx, w.puck.vy) >= STAMINA.superShotMinSpeed, "el tiro debe salir con toda la potencia pedida")
+})
+
+test("super tiro: la pelota queda 'encendida' (Puck.superShot) mientras vuela, y se apaga en el próximo saque", () => {
+  const w = makeWorld({ teamSize: 1 })
+  place(w, "L1", 10, 10)
+  w.puck.carrierId = "L1"
+  assert.equal(w.puck.superShot, false, "en reposo no está encendida")
+  assert.ok(kick(w, "L1", 0, STAMINA.superShotMinSpeed + 4))
+  assert.equal(w.puck.superShot, true, "el súper tiro debe encenderla")
+  kickoff(w)
+  assert.equal(w.puck.superShot, false, "un saque nuevo la apaga")
+})
+
+test("un pase o tiro normal (sin super) nunca enciende la pelota", () => {
+  const w = makeWorld({ teamSize: 1 })
+  place(w, "L1", 10, 10)
+  w.puck.carrierId = "L1"
+  assert.ok(kick(w, "L1", 0, STAMINA.superShotMinSpeed - 3))
+  assert.equal(w.puck.superShot, false)
+})
+
+test("golazo de combo NO enciende la pelota (el súper tiro y el golazo de combo son cosas distintas)", () => {
+  const w = makeWorld({ teamSize: 1 })
+  const s = place(w, "L1", 10, 10)
+  w.puck.carrierId = "L1"
+  w.attackCombo = { side: 0, touches: 3 }
+  assert.ok(kick(w, "L1", 0, STAMINA.superShotMinSpeed + 4))
+  assert.equal(w.puck.comboShot, true)
+  assert.equal(w.puck.superShot, false, "el golazo de combo no gasta energía ni se dibuja encendido")
+  assert.equal(s.stamina, STAMINA.max, "tampoco cobra el costo del súper tiro")
 })
 
 test("sin energía no hay super: se limita la potencia y no se cobra de nuevo", () => {
@@ -161,6 +191,22 @@ test("sin combo armado, ese mismo tiro al medio lo ataja el arquero (control)", 
   const ev = run(w, 2, (x: World) => x.phase === "goal" || x.events.some((e) => e.type === "save"))
   assert.equal(w.phase, "play", "sin combo, este tiro al cuerpo no debe entrar")
   assert.ok(ev.some((e) => e.type === "save"))
+})
+
+test("atajada: el evento dice de qué arquero fue (side) y hacia qué lado despejar (ny), para animar la pierna", () => {
+  const g = GOALS[1]
+  const w = createWorld({ teamSize: 1, goalies: true })
+  place(w, "L1", 26, g.cy)
+  w.puck.carrierId = "L1"
+  w.puck.x = 26; w.puck.y = g.cy
+  assert.ok(kick(w, "L1", Math.atan2(g.cy - w.puck.y, g.lineX - w.puck.x), 18))
+  const ev = run(w, 2, (x: World) => x.phase === "goal" || x.events.some((e) => e.type === "save"))
+  const save = ev.find((e) => e.type === "save")
+  assert.ok(save && save.type === "save")
+  if (save && save.type === "save") {
+    assert.equal(save.side, 1, "la atajó el arquero visitante (defiende ese arco)")
+    assert.ok(Number.isFinite(save.ny))
+  }
 })
 
 // ---------- combo de defensa: 3 intercepciones seguidas arman la atajada garantizada ----------

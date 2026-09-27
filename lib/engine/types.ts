@@ -57,6 +57,10 @@ export interface Puck {
   lastTouchSide: Side | null
   /** Este vuelo puntual del puck viene de un golazo de combo: no lo frena el arquero. */
   comboShot: boolean
+  /** Este vuelo puntual del puck viene de un súper tiro (solo o de combo): se dibuja "encendido",
+   *  con estela en el piso. Puramente visual — no cambia física ni si el arquero lo frena. Se apaga
+   *  en cuanto alguien recupera la pelota (`giveTo`) o en el próximo gol/saque, igual que `comboShot`. */
+  superShot: boolean
   /** Efecto (rad/s de curvatura sobre la velocidad). 0 = recto. Se lo da el tiro, decae con el vuelo. */
   spin: number
 }
@@ -70,7 +74,9 @@ export type GameEvent =
   | { type: "hit"; a: string; b: string; impact: number }
   | { type: "board"; speed: number }
   | { type: "post"; speed: number }
-  | { type: "save"; speed: number; combo?: boolean }
+  /** `ny`: componente y (mundo) de la normal de contacto arquero→pelota — hacia qué lado quedó la
+   *  pelota respecto al arquero en el instante de la atajada (para animar la pierna que despeja). */
+  | { type: "save"; speed: number; combo?: boolean; side: Side; ny: number }
   | { type: "deflect"; id: string; speed: number }
   | { type: "foul"; id: string; victim: string; side: Side; impact: number }
   | { type: "return"; id: string }

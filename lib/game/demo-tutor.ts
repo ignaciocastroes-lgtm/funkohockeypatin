@@ -40,6 +40,12 @@ export class DemoTutor {
     return STAGE_ORDER.every((s) => this.seen.has(s))
   }
 
+  /** ¿Ya narró esta lección en particular? Lo usa `DemoDirector` para saber cuáles todavía tiene
+   *  que empujar y cuáles ya puede dejar de forzar. */
+  has(stage: DemoStage): boolean {
+    return this.seen.has(stage)
+  }
+
   private fire(stage: DemoStage, nowMs: number) {
     if (this.seen.has(stage)) return
     this.seen.add(stage)

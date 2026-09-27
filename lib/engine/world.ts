@@ -84,6 +84,7 @@ function placeKickoff(w: World) {
   p.lastTouchId = null
   p.lastTouchSide = null
   p.comboShot = false
+  p.superShot = false
   p.spin = 0
   w.attackCombo = null
   w.defCombo = null
@@ -137,7 +138,7 @@ export function awardPenalty(w: World, side: Side) {
   p.x = sx; p.y = geom.cy; p.vx = 0; p.vy = 0; p.px = p.x; p.py = p.y
   p.carrierId = shooter.id
   p.lastTouchId = null; p.lastTouchSide = null
-  p.comboShot = false; p.spin = 0
+  p.comboShot = false; p.superShot = false; p.spin = 0
   w.attackCombo = null; w.defCombo = null
   emit(w, { type: "penalty", side, shooterId: shooter.id })
   w.penaltyActive = true
@@ -185,7 +186,7 @@ export function createWorld(cfg: WorldConfig = {}): World {
     .map((side) => ({ side, x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0, radius: GOALIE.radius, aimY: 0, reactTimer: 0, wasIncoming: false, lastShotAngle: null }))
   const puck: Puck = {
     x: 0, y: 0, vx: 0, vy: 0, px: 0, py: 0,
-    radius: PUCK.radius, carrierId: null, lastTouchId: null, lastTouchSide: null, comboShot: false, spin: 0,
+    radius: PUCK.radius, carrierId: null, lastTouchId: null, lastTouchSide: null, comboShot: false, superShot: false, spin: 0,
   }
   const w: World = {
     surface: cfg.surface ?? "madera",
@@ -245,6 +246,7 @@ export function kick(w: World, id: string, angle: number, speed: number): boolea
     if (s.stamina >= SUPER_SHOT_COST) {
       s.stamina = clamp(s.stamina - SUPER_SHOT_COST, 0, STAMINA.max)
       superShot = true
+      p.superShot = true
     } else {
       sp = Math.min(sp, STAMINA.superShotCappedSpeed)
     }
@@ -668,6 +670,7 @@ function giveTo(w: World, s: Skater) {
   p.lastTouchId = s.id
   p.lastTouchSide = s.side
   p.comboShot = false
+  p.superShot = false
   p.spin = 0
   s.controlGrace = SKATER.controlGrace
   s.stickAngle = Math.atan2(p.y - s.y, p.x - s.x)
@@ -695,6 +698,7 @@ function scoreGoal(w: World, defendingSide: Side) {
   w.phaseTimer = MATCH.goalPause
   w.puck.carrierId = null
   w.puck.comboShot = false
+  w.puck.superShot = false
   w.puck.spin = 0
   w.attackCombo = null
   w.defCombo = null
@@ -861,7 +865,7 @@ function updatePuck(w: World, dt: number) {
           p.vx = g.vx
           p.vy = g.vy
           w.defCombo = null
-          emit(w, { type: "save", speed: -vn, combo: true })
+          emit(w, { type: "save", speed: -vn, combo: true, side: g.side, ny })
         } else {
           const e = Math.min(0.95, PUCK.goalieRestitution * pk.restitutionMul)
           p.vx = g.vx + rvx - (1 + e) * vn * nx
@@ -875,7 +879,7 @@ function updatePuck(w: World, dt: number) {
             const clearStrength = clamp(-vn / 14, 0.35, 1)
             p.vx += -geom.dir * GOALIE.clearSpeed * 0.6 * clearStrength
             p.vy += clearSide * GOALIE.clearSpeed * clearStrength
-            emit(w, { type: "save", speed: -vn })
+            emit(w, { type: "save", speed: -vn, side: g.side, ny })
           }
         }
       }

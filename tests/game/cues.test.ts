@@ -2,7 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import {
   AURA_MIN_CONTRAST, CUE_MIN_DISTANCE, FLOOR_BASE,
-  GOALIE_STICK_MAX_TURN, PLATE_BRAND_H, auraColor, canvasFontFamily, colorDistance, edgeAnchor, goalieStickAngle, hudAvoidRects, plateSize, pickCueColor, slideOffRects,
+  GOALIE_STICK_MAX_TURN, PLATE_BRAND_H, auraColor, canvasFontFamily, colorDistance, edgeAnchor, goalieStickAngle, hudAvoidRects, neonColor, plateSize, pickCueColor, slideOffRects,
 } from "../../lib/game/cues"
 import { DEFAULT_TEAMS, distinctColors } from "../../lib/app/teams"
 import type { Surface } from "../../lib/engine"
@@ -47,6 +47,30 @@ test("aura: un color que ya contrasta no se toca; uno oscuro sobre pista azul se
 test("aura: el color de contraste que elige distinctColors para la visita también se ve sobre el piso", () => {
   const [, visit] = distinctColors("#c8102e", "#e63946") // España vs Andorra: se parecen
   for (const s of SURFACES) assert.ok(colorDistance(auraColor(visit, FLOOR_BASE[s]), FLOOR_BASE[s]) >= AURA_MIN_CONTRAST)
+})
+
+test("disco de piso: todo equipo de fábrica se separa de las tres pistas", () => {
+  for (const t of DEFAULT_TEAMS) {
+    for (const s of SURFACES) {
+      const d = neonColor(t.color, FLOOR_BASE[s])
+      assert.ok(colorDistance(d, FLOOR_BASE[s]) >= AURA_MIN_CONTRAST, `${t.name} sobre ${s}: disco ${d}`)
+    }
+  }
+})
+
+test("disco de piso: mismo matiz que el color del equipo (identidad de país), no un color cualquiera", () => {
+  // Rojo (Chile) sigue leyéndose rojo; azul (Francia) sigue leyéndose azul — solo cambia cuánto "grita".
+  const chile = neonColor("#d52b1e", FLOOR_BASE.madera)
+  const rgbc = (hex: string) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]
+  const [r, g, b] = rgbc(chile)
+  assert.ok(r > g && r > b, `disco de Chile ${chile} debería seguir leyéndose rojo`)
+  const francia = neonColor("#002654", FLOOR_BASE.madera)
+  const [fr, fg, fb] = rgbc(francia)
+  assert.ok(fb >= fr && fb >= fg, `disco de Francia ${francia} debería seguir leyéndose azul`)
+})
+
+test("disco de piso: nunca rompe con blanco/gris (sin matiz definido)", () => {
+  for (const s of SURFACES) assert.match(neonColor("#f4f4f5", FLOOR_BASE[s]), /^#[0-9a-f]{6}$/) // Alemania
 })
 
 const VW = 844, VH = 390, M = 24

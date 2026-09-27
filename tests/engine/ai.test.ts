@@ -196,7 +196,11 @@ test("defendiendo: cubre más de cerca al rival peligroso cerca del arco que al 
     const ai = new TeamAI({ seed: 7, skill: [0.8, 0.8] })
     playAI(w, ai, 3, null, (ww) => { const v = findSkater(ww, "V1"); if (v) { v.vx = 0; v.vy = 0; v.inputX = 0; v.inputY = 0 } })
     const v2 = findSkater(w, "V2")!
-    return Math.min(...["L1", "L2", "L3", "L4"].map((id) => Math.hypot(findSkater(w, id)!.x - v2.x, findSkater(w, id)!.y - v2.y)))
+    // Quién queda cubriendo, no una lista fija de ids: en 3 segundos de física real un defensor
+    // puede terminar con tarjeta azul (falta) y salir de la pista — el que lo reemplaza en la
+    // marca es a quien hay que medir, no a un "L3" que quizás ya ni está en el hielo.
+    const onIce = w.skaters.filter((s) => s.side === 0)
+    return Math.min(...onIce.map((s) => Math.hypot(s.x - v2.x, s.y - v2.y)))
   }
 
   const closeGap = gapFor(own.lineX + 3) // V2 pegado al arco: peligro real

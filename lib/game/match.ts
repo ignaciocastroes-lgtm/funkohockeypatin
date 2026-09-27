@@ -28,12 +28,14 @@ import type { ShootoutResult, ShootoutState } from "./shootout"
 export type { ShootoutResult } from "./shootout"
 import type { SkaterKind, PuckKind, Side, Surface, World } from "../engine"
 import { EDGE_CHIP_R, drawHud, drawScene, teammateEdgeChips } from "./draw"
+import type { GoalieSaveFX } from "./draw"
 import { canvasFontFamily, plateSize } from "./cues"
-import { Confetti, ReplayBuffer, drawFlash, replayFrameAt, replayWorld } from "./effects"
+import { Confetti, ReplayBuffer, SuperTrail, drawFlash, replayFrameAt, replayWorld } from "./effects"
 import type { Flash, GoalReplay } from "./effects"
 import { TouchInput, isShootKey, keyboardVector } from "./input"
 import { Crowd } from "./crowd"
 import { DemoTutor } from "./demo-tutor"
+import { DemoDirector } from "./demo-director"
 import type { MusicLevel } from "./crowd"
 import { Sfx } from "./sfx"
 
@@ -78,12 +80,22 @@ export interface MatchOptions {
   debug?: boolean
   /** Semilla de la IA (por defecto aleatoria). */
   seed?: number
-  /** Modo demo/espectador: la IA controla los DOS lados, no hay jugador humano. El toque y el
-   *  teclado no mueven a nadie (solo sirven para pausar/salir desde el HUD normal). */
+  /** Attract mode: la IA controla los DOS lados, no hay jugador humano. El demo tiene que ENSEÑAR
+   *  antes de vender (ver `DemoTutor`): antes de narrar sus 4 jugadas no muestra nada más, y recién
+   *  ahí un toque o una tecla cortan el demo (`onDemoTap`) — es la señal de "quiero jugar". No usar
+   *  esto para un espectador que decidió mirar a propósito (Dios vs Dios): eso es `spectator`. */
   demo?: boolean
   /** Solo en modo demo: se llama la PRIMERA vez que el usuario toca la pantalla o aprieta una
    *  tecla — es la señal de "quiero jugar", para cortar el demo y arrancar un partido de verdad. */
   onDemoTap?: () => void
+  /** Espectador: igual que `demo` en que la IA controla los DOS lados (nadie juega), pero para
+   *  cuando quien mira lo eligió a propósito (Dios vs Dios) — no es un cartel de arcade tratando
+   *  de venderle un partido a quien pasa. Sin `DemoTutor`, sin "TOCÁ PARA JUGAR": un toque en la
+   *  cancha pausa como en un partido de verdad (dispara `onAutoPause`, igual que ocultar la
+   *  pestaña), no se traga en silencio ni corta a ningún lado. Se sale por el menú de pausa, como
+   *  cualquier partido — no por un toque cualquiera. No combinar con `demo`: si ambos vienen en
+   *  true, `demo` manda (el attract mode conserva su comportamiento de siempre). */
+  spectator?: boolean
   /** Modo entrenamiento: sin equipo rival (la IA no controla nada del lado visita, queda quieto),
    *  arquero configurable por lado, para practicar tiros libremente. `penalties`: en vez de tiros
    *  libres, arma un penal tras otro contra el arquero rival (mano a mano, con el tanque de energía
@@ -185,13 +197,19 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   sfx.muted = o.sound === false
   // Público de las gradas (murmullo, ovaciones, reacciones). El entrenamiento es práctica en soledad: sin público.
   // En el demo (IA vs IA) no hay equipo "propio": festeja parejo.
-  const crowd = o.training ? null : new Crowd(sfx, o.demo ? null : 0)
+  const crowd = o.training ? null : new Crowd(sfx, (o.demo || o.spectator) ? null : 0)
   crowd?.setMusic(o.music ?? "on")
   // Solo en modo demo: reconoce en vivo las 4 jugadas que enseñan el juego (toque, golazo,
   // súper tiro, defensa) y recién cuando ya narró las 4 deja pasar el "TOCÁ PARA JUGAR".
   const demoTutor = o.demo ? new DemoTutor() : null
+  // Guioniza las 4 lecciones del demo (ver DemoDirector) — nunca en Dios vs Dios (`spectator`),
+  // que quiere mostrar a la IA jugando de verdad, no un partido armado.
+  const demoDirector = o.demo ? new DemoDirector() : null
   const confetti = new Confetti()
   const replayBuf = new ReplayBuffer(2.4)
+  const superTrail = new SuperTrail()
+  // Última atajada de cada arquero (por lado), para animar la pierna de despeje en drawScene.
+  const saveFX: (GoalieSaveFX | null)[] = [null, null]
   let flash: Flash | null = null
   let viewMode: ViewMode = "auto"
   let goalReplay: GoalReplay | null = null
@@ -299,6 +317,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     e.preventDefault()
     sfx.unlock()
     if (o.demo) { o.onDemoTap?.(); return } // "attract mode": cualquier toque corta el demo y arranca a jugar
+    if (o.spectator) { if (!paused && !ended) { pause(); o.onAutoPause?.() } return } // espectador: el toque pausa como en un partido real, nunca se traga en silencio
     try { canvas.setPointerCapture(e.pointerId) } catch { /* ok */ }
     if (paused || ended) return
     const p = pos(e)
@@ -315,7 +334,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     sfx.unlock()
     const p = pos(e)
     const ev = input.up(e.pointerId, p.x, p.y, e.timeStamp / 1000)
-    if (ev && !paused && !ended && !o.demo) pending.push(ev)
+    if (ev && !paused && !ended && !o.demo && !o.spectator) pending.push(ev)
   }
   const onCancel = (e: PointerEvent) => {
     input.cancel(e.pointerId)
@@ -395,7 +414,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         const power = Math.max(0.15, Math.min(1, (performance.now() - startedAt) / CHARGE_MS))
         startedAt = 0
         fill.style.height = "0%"
-        if (!paused && !ended && !o.demo) pending.push({ kind: "button", action, power })
+        if (!paused && !ended && !o.demo && !o.spectator) pending.push({ kind: "button", action, power })
       }
       btn.addEventListener("pointerdown", start, { passive: false })
       btn.addEventListener("pointerup", release)
@@ -416,10 +435,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
     if (o.demo) { if (!e.repeat) o.onDemoTap?.(); return } // cualquier tecla también cuenta como "quiero jugar"
+    if (o.spectator) { if (!e.repeat && !paused && !ended) { pause(); o.onAutoPause?.() } return }
     pressedKeys.add(e.code)
     if (isShootKey(e.code)) {
       e.preventDefault() // que Espacio no scrollee la página
-      if (!e.repeat && !paused && !ended && !o.demo) pending.push({ kind: "tap" })
+      if (!e.repeat && !paused && !ended && !o.demo && !o.spectator) pending.push({ kind: "tap" })
     }
   }
   const onKeyUp = (e: KeyboardEvent) => { pressedKeys.delete(e.code) }
@@ -532,7 +552,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
    *  apenas alguien agarra la pelota (pensado para un pase en el aire), y esto tiene que aguantar
    *  todo el juego abierto, no solo mientras la pelota vuela. */
   function cyclePlayer() {
-    if (o.demo) return
+    if (o.demo || o.spectator) return
     const onIce = world.skaters.filter((s) => s.side === 0).sort((a, b) => a.id.localeCompare(b.id))
     if (onIce.length === 0) return
     const idx = onIce.findIndex((s) => s.id === controlledId)
@@ -585,7 +605,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     if (!paused) {
       alpha = stepper.advance(dt, (fixed) => {
         if (receiverLock && (world.puck.carrierId !== null || world.time > receiverLock.until || world.phase !== "play" || !findSkater(world, receiverLock.id))) receiverLock = null
-        controlledId = o.demo ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
+        controlledId = (o.demo || o.spectator) ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
         if (o.training) ai.update(world, controlledId, fixed, [0]) // en entrenamiento, solo los compañeros (lado 0) se mueven solos — no hay rival de verdad
         else ai.update(world, controlledId, fixed)
         if (controlledId) {
@@ -594,9 +614,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
           setInput(world, controlledId, useKb ? kb.x : input.moveX, useKb ? kb.y : input.moveY)
         }
         while (pending.length) applyAction(pending.shift() as ActionEvent)
+        if (demoDirector && demoTutor && !demoTutor.done) demoDirector.step(world, (stage) => demoTutor.has(stage), now)
         stepWorld(world, fixed)
         stepsThisFrame++
         stats.steps++
+        if (world.puck.superShot && !world.puck.carrierId) superTrail.mark(world.puck.x, world.puck.y, now)
         if (world.phase === "play" || world.phase === "timeOn") replayBuf.push(world)
         if (world.events.length) {
           for (const ev of drainEvents(world)) {
@@ -611,6 +633,10 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
             } else if (ev.type === "combo") {
               banner = { text: `${names[ev.side]} — combo ${ev.kind === "attack" ? "de ataque" : "defensivo"} armado`, until: now + 1400 }
               navigator.vibrate?.(30)
+            } else if (ev.type === "save") {
+              // Solo dibujo: la pierna de despeje del arquero se anima leyendo esto en drawScene
+              // (ver GOALIE_KICK_MS) — no hay nada nuevo que simular, ya pasó.
+              saveFX[ev.side] = { startedAt: now, ny: ev.ny }
             } else if (ev.type === "sub") {
               // Antes esto era solo un cartelito de texto (1.4s, fácil de perderse con la jugada
               // en marcha) y encima no decía QUIÉN salía. El pedido es que el cambio automático
@@ -648,7 +674,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
               result.fouls = [world.fouls[0], world.fouls[1]]
               // Festejo de partido ganado: un estallido de confeti más grande, desde el medio de la
               // pantalla — aparte del que ya tira cada gol individual.
-              if (!o.demo && !o.training && world.score[0] > world.score[1]) {
+              if (!o.demo && !o.spectator && !o.training && world.score[0] > world.score[1]) {
                 confetti.spawn(cssW / 2, cssH * 0.35, [colors[0], "#ffd23f", "#ffffff", "#4ade80"], 220)
               }
               o.onEnd?.({ ...result })
@@ -708,7 +734,10 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     } else if (goalReplay) {
       goalReplay = null
     }
-    const opts = { controlledId, humanSide: (o.demo ? null : 0) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver }
+    const opts = {
+      controlledId, humanSide: ((o.demo || o.spectator) ? null : 0) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver,
+      superTrail: superTrail.live(now), goalieSave: saveFX,
+    }
 
     // Cancha, joystick y línea de apuntado: viven en el espacio "virtual" horizontal y se rotan 90°
     // en vertical (junto con el toque, que se traduce al mismo espacio — ver toVirtual arriba).
@@ -760,7 +789,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     }
     demoTutor?.tick(now)
     drawHud(ctx, world, {
-      ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo, demo: o.demo,
+      ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo && !o.spectator, demo: o.demo,
       demoCaption: demoTutor?.caption ?? null, demoReady: demoTutor ? demoTutor.done : true,
       controlScheme: o.controlScheme ?? "honda", scorePanelShift,
     }, cssW, cssH)

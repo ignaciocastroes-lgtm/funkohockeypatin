@@ -74,6 +74,56 @@ export class Confetti {
   clear() { this.pieces.length = 0 }
 }
 
+// ---------- estela de súper tiro ----------
+export interface TrailPoint { x: number; y: number; bornAt: number }
+
+/** Cuánta distancia (m) tiene que volar la pelota entre una marca y la siguiente: por distancia, no
+ *  por cuadro, para no amontonar puntos si viene casi frenada. */
+const TRAIL_SPACING = 0.3
+const TRAIL_LIFE_MS = 600
+
+/**
+ * Estela de un súper tiro: las marcas que va dejando la pelota "encendida" en el piso mientras
+ * vuela. Puramente cosmético — no vive en el motor (el súper tiro en sí es un booleano en `Puck`,
+ * ver `world.ts`); esta clase solo recuerda por dónde pasó, para pintarlo, y se olvida sola.
+ */
+export class SuperTrail {
+  private pts: TrailPoint[] = []
+  private lastX: number | null = null
+  private lastY: number | null = null
+
+  /** Llamar en cada paso fijo mientras `puck.superShot && !puck.carrierId`. */
+  mark(x: number, y: number, nowMs: number) {
+    if (this.lastX !== null && this.lastY !== null && Math.hypot(x - this.lastX, y - this.lastY) < TRAIL_SPACING) return
+    this.lastX = x
+    this.lastY = y
+    this.pts.push({ x, y, bornAt: nowMs })
+    if (this.pts.length > 40) this.pts.shift()
+  }
+
+  /** Marcas vivas en este instante (ya filtra las vencidas). Para dibujar. */
+  live(nowMs: number): TrailPoint[] {
+    this.pts = this.pts.filter((p) => nowMs - p.bornAt < TRAIL_LIFE_MS)
+    return this.pts
+  }
+}
+
+/** Dibuja la estela: manchas achatadas que se apagan solas, más chicas cuanto más viejas. Se llama
+ *  DENTRO del espacio de mundo (después de la cancha, antes de la pelota) para que quede pintada
+ *  en el piso, no flotando sobre los patinadores. */
+export function drawSuperTrail(ctx: CanvasRenderingContext2D, pts: TrailPoint[], nowMs: number) {
+  if (pts.length === 0) return
+  ctx.save()
+  for (const p of pts) {
+    const t = Math.min(1, (nowMs - p.bornAt) / TRAIL_LIFE_MS)
+    const shrink = 1 - t * 0.5
+    ctx.globalAlpha = (1 - t) * 0.5
+    ctx.fillStyle = t < 0.4 ? "#fde68a" : "#f97316"
+    ctx.beginPath(); ctx.ellipse(p.x, p.y, 0.2 * shrink, 0.13 * shrink, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.restore()
+}
+
 // ---------- pantallazo ----------
 export interface Flash { color: string; startedAt: number; durationMs: number }
 

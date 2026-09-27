@@ -1,11 +1,17 @@
 import { CREASE_RADIUS, GOAL, GOALS, MATCH, RINK, SKATER, bestPassTarget } from "../engine"
 import type { Camera, Side, Skater, Surface, World } from "../engine"
 import { drawGlyphs } from "./glyphs"
-import { FLOOR_BASE, PLATE_BRAND_H, auraColor, goalieStickAngle, edgeAnchor, hudAvoidRects, pickCueColor, plateSize, rgb, slideOffRects } from "./cues"
+import { FLOOR_BASE, PLATE_BRAND_H, neonColor, goalieStickAngle, edgeAnchor, hudAvoidRects, pickCueColor, plateSize, rgb, slideOffRects } from "./cues"
+import { drawSuperTrail } from "./effects"
+import type { TrailPoint } from "./effects"
+
+/** Una atajada en curso, para animar la pierna que despeja (ver el bloque de porteros en
+ *  `drawScene`). `ny` es la componente y de la normal de contacto — hacia qué lado patea. */
+export interface GoalieSaveFX { startedAt: number; ny: number }
 
 export interface DrawOptions {
   controlledId: string | null
-  /** Lado del equipo humano (0), o null si no hay humano (demo): activa el aura de "mi equipo". */
+  /** Lado del equipo humano (0), o null si no hay humano (demo): activa el disco de "mi equipo". */
   humanSide?: Side | null
   colors: [string, string]
   /** Color del pantalón por lado, si el equipo tiene uno distinto al de la camiseta. */
@@ -40,6 +46,11 @@ export interface DrawOptions {
   /** 0..1: cuánto se corre el marcador hacia la derecha y se atenúa — sube cuando la pelota (y el
    *  jugador controlado) están sobre esa esquina, para no taparlos. 0 = posición/opacidad normal. */
   scorePanelShift?: number
+  /** Marcas que va dejando un súper tiro en vuelo (ver `SuperTrail` en effects.ts). */
+  superTrail?: TrailPoint[]
+  /** Última atajada de cada arquero (índice = side), para animar la pierna de despeje mientras
+   *  esté "fresca". null/ausente = arquero en reposo (dos pies quietos, sin patada). */
+  goalieSave?: (GoalieSaveFX | null)[]
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
@@ -61,10 +72,10 @@ function rgba(hex: string, a: number): string {
 
 /** Cómo se dibuja un patinador según su relación con el humano. Lo decide drawScene, no drawSkater. */
 interface Look {
-  /** Es de mi equipo (y no soy yo): lleva aura de equipo. */
+  /** Es de mi equipo (y no soy yo): lleva disco de piso de equipo y anillo claro junto al cuerpo. */
   mine: boolean
-  /** Color del aura (el del equipo, aclarado si se pierde contra el piso). */
-  aura: string
+  /** Color del disco de piso "flúor" (el matiz del equipo, llevado a neón). Piso, no cuerpo. */
+  disc: string
   /** Color del marcador de "lo controlás" (amarillo, o blanco si el equipo es amarillo/naranja). */
   cue: string
   /** Es el compañero al que iría el pase automático (toque suelto). */
@@ -72,8 +83,10 @@ interface Look {
   /** Píxeles por metro de la cámara: los trazos finos no bajan de ~1.6 px aunque se aleje el zoom. */
   ppm: number
 }
-const NO_LOOK: Look = { mine: false, aura: "#ffffff", cue: "#facc15", passTarget: false, ppm: 20 }
+const NO_LOOK: Look = { mine: false, disc: "#ffffff", cue: "#facc15", passTarget: false, ppm: 20 }
 const PASS_GREEN = "#4ade80"
+/** Ventana (ms) de la animación de "patada" del arquero después de una atajada: sale y vuelve. */
+const GOALIE_KICK_MS = 420
 
 const FLOOR: Record<Surface, { base: string; line: string }> = {
   madera: { base: FLOOR_BASE.madera, line: "rgba(0,0,0,0.22)" },
@@ -391,26 +404,27 @@ function drawHair(ctx: CanvasRenderingContext2D, style: 0 | 1 | 2 | 3, hc: strin
   ctx.restore()
 }
 
-// Caché del degradé del "aura de compañero": para un jugador dado, `look.aura` y su radio `r` (en
-// METROS, no depende del zoom de cámara) son siempre los mismos durante todo el partido — no hace
-// falta reconstruir el gradiente en cada cuadro para cada compañero (antes: hasta 3-4
-// `createRadialGradient` por cuadro, uno por compañero, 60 veces por segundo). Por `ctx` (WeakMap)
-// para no filtrar memoria entre partidos si algún día hay más de un canvas vivo a la vez.
-const auraGradientCache = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasGradient>>()
-function auraGradientFor(ctx: CanvasRenderingContext2D, color: string, r: number): CanvasGradient {
-  let cache = auraGradientCache.get(ctx)
-  if (!cache) { cache = new Map(); auraGradientCache.set(ctx, cache) }
-  const key = `${color}|${r}`
-  let g = cache.get(key)
-  if (!g) {
-    const gr = r * 2.15
-    g = ctx.createRadialGradient(0, 0, r * 0.7, 0, 0, gr)
-    g.addColorStop(0, rgba(color, 0.72))
-    g.addColorStop(0.55, rgba(color, 0.32))
-    g.addColorStop(1, rgba(color, 0))
-    cache.set(key, g)
-  }
-  return g
+/**
+ * Disco de piso de un compañero de equipo: una marca chata, del color flúor del país, pintada en
+ * el suelo bajo el jugador — no un resplandor sobre el cuerpo. Se pinta ANTES que patines/sombra/
+ * cuerpo, así el personaje queda siempre encima, entero, sin que el disco lo tape ni lo recorte.
+ * Estático (sin pulso ni fundido de entrada/salida): a propósito, para que se perciba de reojo, sin
+ * tener que enfocar la vista en él — el que pulsa es el marcador de "lo controlás", no este.
+ */
+function drawFloorDisc(ctx: CanvasRenderingContext2D, r: number, color: string) {
+  const rx = r * 1.8
+  const ry = rx * 0.62 // achatado: se lee como un aro en el piso, no como una esfera flotando
+  ctx.save()
+  ctx.beginPath()
+  ctx.ellipse(0, r * 0.18, rx, ry, 0, 0, Math.PI * 2)
+  ctx.fillStyle = rgba(color, 0.22)
+  ctx.fill()
+  ctx.lineWidth = 0.08
+  ctx.strokeStyle = color
+  ctx.shadowColor = color
+  ctx.shadowBlur = 7
+  ctx.stroke()
+  ctx.restore()
 }
 
 export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: string, alpha: number, controlled: boolean, carrying: boolean, comboTouches: number, look: Look = NO_LOOK, pantsColor?: string) {
@@ -444,6 +458,8 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
 
   ctx.save()
   ctx.translate(x, y)
+
+  if (look.mine) drawFloorDisc(ctx, r, look.disc)
 
   // Patines: un par asomando bajo el cuerpo, en zancada alternada cuando se mueve — se dibujan
   // ANTES de la sombra/cuerpo así el cuerpo los tapa en parte (look Funko: cuerpo/cabeza grande,
@@ -490,14 +506,6 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
     ctx.fillStyle = g
     ctx.beginPath(); ctx.arc(0, 0, beaconR, 0, Math.PI * 2); ctx.fill()
     ctx.restore()
-  }
-  if (look.mine) {
-    // Aura de compañero: un resplandor ESTÁTICO del color del equipo alrededor del cuerpo. El aro
-    // fino de color no alcanzaba: esto agrega superficie (se lee de lejos) y, con el anillo claro
-    // de más abajo, un canal que no depende del tono. Estático a propósito: "yo" es el que pulsa.
-    const glow = auraGradientFor(ctx, look.aura, r)
-    ctx.fillStyle = glow
-    ctx.beginPath(); ctx.arc(0, 0, r * 2.15, 0, Math.PI * 2); ctx.fill()
   }
   // sombra
   ctx.fillStyle = "rgba(0,0,0,0.35)"
@@ -603,8 +611,9 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
     ctx.fillText("★", 0, -r * 0.05)
   }
   if (look.mine) {
-    // Anillo claro y fino, sólido (el de "lo controlás" es grueso, punteado y late): con el
-    // resplandor de abajo forma el aura. Es claro para que no dependa del tono del equipo.
+    // Anillo claro y fino, sólido (el de "lo controlás" es grueso, punteado y late): junto con el
+    // disco de piso de más abajo, un segundo canal a la altura del cuerpo. Blanco para que no
+    // dependa del tono del equipo (no compite con el color del disco).
     ctx.strokeStyle = "rgba(255,255,255,0.92)"
     ctx.lineWidth = Math.max(0.055, 1.6 / look.ppm)
     ctx.beginPath(); ctx.arc(0, 0, r + 0.13, 0, Math.PI * 2); ctx.stroke()
@@ -768,6 +777,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   drawMarkings(ctx)
   drawGoals(ctx)
   drawBoards(ctx)
+  if (o.superTrail) drawSuperTrail(ctx, o.superTrail, performance.now())
 
   // puck (con radio visual mínimo para que se vea en pantallas chicas)
   const p = w.puck
@@ -805,6 +815,36 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     }
     ctx.save()
     ctx.translate(gx, gy)
+    // Piernas: antes el arquero no las tenía dibujadas (solo el palo se movía para atajar). Un
+    // arquero de hockey patín SÍ patea para cerrar el ángulo abajo — dos pies quietos en reposo;
+    // recién atajada de por medio (`o.goalieSave`, con el lado hacia donde entró el tiro en `ny`),
+    // una pierna se estira hacia ese lado y vuelve sola. Sin estado nuevo en el motor: la ventana
+    // de animación (`GOALIE_KICK_MS`) se mide contra el reloj, como el resto de los gestos de golpe.
+    {
+      const save = o.goalieSave?.[g.side]
+      const saveAgeMs = save ? performance.now() - save.startedAt : Infinity
+      // 0 → 1 → 0 a lo largo de la ventana: la pierna sale y vuelve, no se queda pegada afuera.
+      const kickAmt = saveAgeMs < GOALIE_KICK_MS ? Math.sin((saveAgeMs / GOALIE_KICK_MS) * Math.PI) : 0
+      const kickSide: 1 | -1 = (save?.ny ?? 0) >= 0 ? 1 : -1
+      const restY = g.radius * 0.55
+      const restX = -g.radius * 0.22
+      const feet: Array<[number, number]> =
+        kickAmt > 0.02
+          ? [
+              [restX + kickAmt * g.radius * 0.2, -restY * kickSide * (1 - kickAmt * 0.6)], // pivote
+              [restX - kickAmt * g.radius * 0.15, restY * kickSide + kickSide * kickAmt * g.radius * 1.7], // patada
+            ]
+          : [[restX, -restY], [restX, restY]]
+      ctx.fillStyle = "#27272a"
+      for (const [fx2, fy2] of feet) {
+        ctx.beginPath(); ctx.ellipse(fx2, fy2, g.radius * 0.24, g.radius * 0.15, 0, 0, Math.PI * 2); ctx.fill()
+      }
+      ctx.fillStyle = "#a1a1aa"
+      for (const [fx2, fy2] of feet) {
+        ctx.beginPath(); ctx.arc(fx2 - g.radius * 0.11, fy2, g.radius * 0.045, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.arc(fx2 + g.radius * 0.11, fy2, g.radius * 0.045, 0, Math.PI * 2); ctx.fill()
+      }
+    }
     // sombra
     ctx.fillStyle = "rgba(0,0,0,0.35)"
     ctx.beginPath(); ctx.ellipse(0.05, 0.1, g.radius * 1.05, g.radius * 0.9, 0, 0, Math.PI * 2); ctx.fill()
@@ -873,7 +913,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   // Aura de equipo: solo si hay un humano (no en el demo IA vs IA).
   const hs = o.humanSide ?? null
   const live = w.phase === "play" || w.phase === "timeOn"
-  const aura = hs === null ? "#ffffff" : auraColor(o.colors[hs], FLOOR[w.surface].base)
+  const disc = hs === null ? "#ffffff" : neonColor(o.colors[hs], FLOOR[w.surface].base)
   const cue = hs === null ? "#facc15" : pickCueColor(o.colors[hs])
   const humanCarrier = hs !== null && live && w.puck.carrierId && w.puck.carrierId === o.controlledId
     ? w.skaters.find((k) => k.id === w.puck.carrierId && k.side === hs)
@@ -901,7 +941,7 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     const controlled = s.id === o.controlledId
     const look: Look = {
       mine: hs !== null && s.side === hs && !controlled,
-      aura,
+      disc,
       cue,
       passTarget: s.id === passId,
       ppm: cam.ppm,
@@ -912,6 +952,23 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   // bocha (no disco de NHL, y NO una pelota de básquet): esfera chica y dura, sin el borde negro
   // grueso que la hace leer como básquetbol — un brillo angosto y compacto, nomás.
   const bpr = pr * 0.62
+  // Súper tiro en vuelo: la pelota se ve "encendida" (núcleo claro, aro caliente alrededor) — deja
+  // de estar encendida en cuanto alguien la recupera (`Puck.superShot` se apaga en `giveTo`, ver
+  // world.ts), así que acá alcanza con leer el booleano, sin estado nuevo del lado del dibujo.
+  const lit = w.puck.superShot && !w.puck.carrierId
+  if (lit) {
+    const t = performance.now() / 1000
+    const flicker = 0.75 + 0.25 * Math.sin(t * 26) * Math.sin(t * 11 + 1)
+    ctx.save()
+    const glowR = bpr * (2.8 + flicker * 0.6)
+    const g = ctx.createRadialGradient(pxp, pyp, bpr * 0.4, pxp, pyp, glowR)
+    g.addColorStop(0, "rgba(255,241,150,0.85)")
+    g.addColorStop(0.4, "rgba(251,146,60,0.55)")
+    g.addColorStop(1, "rgba(239,68,68,0)")
+    ctx.fillStyle = g
+    ctx.beginPath(); ctx.arc(pxp, pyp, glowR, 0, Math.PI * 2); ctx.fill()
+    ctx.restore()
+  }
   if (w.puck.carrierId) {
     // Imán al palo: mientras alguien la controla, un resplandor suave y quieto (no pulsa — lo que
     // ya pulsa es el beacon del jugador controlado, esto es otra señal) que la "pega" visualmente
@@ -922,9 +979,9 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     ctx.beginPath(); ctx.arc(pxp, pyp, bpr * 2.1, 0, Math.PI * 2); ctx.fill()
     ctx.restore()
   }
-  ctx.fillStyle = "#9a3412"
+  ctx.fillStyle = lit ? "#fb923c" : "#9a3412"
   ctx.beginPath(); ctx.arc(pxp, pyp, bpr, 0, Math.PI * 2); ctx.fill()
-  ctx.fillStyle = "#ea580c"
+  ctx.fillStyle = lit ? "#fef08a" : "#ea580c"
   ctx.beginPath(); ctx.arc(pxp, pyp, bpr * 0.92, 0, Math.PI * 2); ctx.fill()
   ctx.fillStyle = "rgba(255,255,255,0.65)"
   ctx.beginPath(); ctx.ellipse(pxp - bpr * 0.3, pyp - bpr * 0.3, bpr * 0.22, bpr * 0.14, -0.6, 0, Math.PI * 2); ctx.fill()

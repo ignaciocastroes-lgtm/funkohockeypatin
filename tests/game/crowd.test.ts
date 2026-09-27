@@ -102,7 +102,7 @@ test("demo (sin equipo propio): festeja parejo los goles de los dos lados", () =
 
 test("palo, atajada, tiro fuerte: reacción corta; un toque normal del puck no hace nada", () => {
   assert.ok(reactionFor({ type: "post", speed: 12 }, 0)!.react! > 0)
-  assert.ok(reactionFor({ type: "save", speed: 12, combo: true }, 0)!.react! > reactionFor({ type: "save", speed: 12 }, 0)!.react!)
+  assert.ok(reactionFor({ type: "save", speed: 12, combo: true, side: 0, ny: 0 }, 0)!.react! > reactionFor({ type: "save", speed: 12, side: 0, ny: 0 }, 0)!.react!)
   assert.ok(reactionFor({ type: "kick", id: "L1", speed: 20, superShot: true }, 0))
   assert.equal(reactionFor({ type: "kick", id: "L1", speed: 8 }, 0), null)
   assert.equal(reactionFor({ type: "board", speed: 9 }, 0), null)
@@ -117,7 +117,7 @@ test("silbato: falta, penal, saque y final bajan al público un instante (para q
 })
 
 test("todas las reacciones tienen valores en rango", () => {
-  const evs: GameEvent[] = [G(0), G(1, true), { type: "post", speed: 1 }, { type: "save", speed: 1 }, { type: "kick", id: "L1", speed: 20, superShot: true },
+  const evs: GameEvent[] = [G(0), G(1, true), { type: "post", speed: 1 }, { type: "save", speed: 1, side: 0, ny: 0 }, { type: "kick", id: "L1", speed: 20, superShot: true },
     { type: "combo", side: 0, touches: 3, kind: "attack" }, { type: "foul", id: "L1", victim: "V1", side: 0, impact: 1 }, { type: "penalty", side: 1, shooterId: "V1" }, { type: "kickoff" }, { type: "end" }]
   for (const ev of evs) {
     const r = reactionFor(ev, 0)!

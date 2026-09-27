@@ -661,6 +661,9 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
    *  menú de pausa completo (no el HUD pelado del demo), sin empates (tanda de penales si hace
    *  falta) y, al final, la misma ceremonia de campeón que la Copa de verdad — el que gana esta
    *  final se corona. No toca `saved.cup` (la Copa real del jugador no se entera de esto).
+   *  Usa `spectator: true` (no `demo: true`): sin "TOCÁ PARA JUGAR", sin `DemoTutor`, y un toque en
+   *  la cancha pausa como en un partido real en vez de tragarse en silencio — es el que pedía la
+   *  auditoría de ronda 46 ("Dios vs Dios sin TOCÁ ni tragar el toque").
    */
   let godPlaying = false
   function startGodMode() {
@@ -676,7 +679,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const mo = teamMatchOptions(a.id, b.id)
     const m = mountMatch(wrap, {
       ...mo,
-      demo: true,
+      spectator: true,
       aiSkill: [1, 1],
       onEnd: (r) => {
         if (r.score[0] === r.score[1]) { startGodShootout(wrap, a.id, b.id, r.score); return }
@@ -691,7 +694,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   /** Empate en la final Dios vs Dios: tanda de penales, igual que en la Copa real — acá tampoco
-   *  se admiten empates, alguien tiene que coronarse. Sigue siendo espectador (`demo: true`). */
+   *  se admiten empates, alguien tiene que coronarse. Sigue siendo espectador (`spectator: true`). */
   function startGodShootout(prevWrap: HTMLElement, home: string, away: string, regularScore: [number, number]) {
     stopMatch()
     godPlaying = true
@@ -701,7 +704,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const mo = teamMatchOptions(home, away)
     const m = mountMatch(wrap, {
       ...mo,
-      demo: true,
+      spectator: true,
       aiSkill: [1, 1],
       shootout: true,
       onShootoutEnd: (sr) => {
