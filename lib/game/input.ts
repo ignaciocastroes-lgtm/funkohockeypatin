@@ -27,12 +27,13 @@ export type ActionEvent =
       strict?: boolean
     }
   | {
-      /** Esquema "botones": pase, pase fuerte o tiro por botón, con medidor de potencia (0..1) en
-       *  vez de gesto. "pase" y "pase-fuerte" apuntan igual (al mejor compañero libre): la
-       *  diferencia es la velocidad de salida — "pase-fuerte" es un pase directo, más difícil de
-       *  cortar, para cuando ya no hace falta el toque suave (un contragolpe, un cambio de frente). */
+      /** Esquema "botones": pase, pase fuerte, tiro o tiro fuerte por botón, con medidor de
+       *  potencia (0..1) en vez de gesto. "pase"/"pase-fuerte" apuntan al mejor compañero libre
+       *  (la diferencia es la velocidad de salida). "tiro"/"tiro-fuerte" apuntan hacia donde mira
+       *  el jugador — "tiro-fuerte" ya sale en rango de súper tiro incluso con poca carga (un
+       *  botón dedicado para la jugada de lujo, sin depender de cargar el de tiro normal a fondo). */
       kind: "button"
-      action: "pase" | "pase-fuerte" | "tiro"
+      action: "pase" | "pase-fuerte" | "tiro" | "tiro-fuerte"
       power: number
     }
 

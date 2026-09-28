@@ -146,4 +146,5 @@ export const CSS = `
 @keyframes fp-jump{0%,100%{transform:translateY(0)}50%{transform:translateY(-15px)}}
 @keyframes fp-trophy-bob{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-9px) rotate(4deg)}}
 @keyframes fp-confetti-fall{0%{transform:translateY(-10px) rotate(0deg);opacity:1}100%{transform:translateY(170px) rotate(360deg);opacity:0}}
+@keyframes fp-superflash{0%{box-shadow:0 0 10px 2px rgba(250,204,21,.35),inset 0 0 10px rgba(255,255,255,.08);transform:scale(1)}30%{box-shadow:0 0 34px 10px rgba(253,224,71,.95),0 0 60px 18px rgba(249,115,22,.6),inset 0 0 18px rgba(255,255,255,.5);transform:scale(1.14)}100%{box-shadow:0 0 10px 2px rgba(250,204,21,.35),inset 0 0 10px rgba(255,255,255,.08);transform:scale(1)}}
 `

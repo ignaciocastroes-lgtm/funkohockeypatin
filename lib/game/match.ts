@@ -348,43 +348,57 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   canvas.addEventListener("pointercancel", onCancel)
   canvas.addEventListener("contextmenu", noMenu)
 
-  // Tamaño de PASE/TIRO en el esquema "botones" — declarado afuera del bloque que arma los
+  // Tamaño de los botones en el esquema "botones" — declarado afuera del bloque que arma los
   // botones porque el cálculo de si tapan la jugada (más abajo, en el loop de cuadro) también lo
-  // necesita.
-  const ACTION_BTN_SIZE = 96
+  // necesita. `CHARGE_MS` también sale de acá: los atajos de teclado (J/K/L/I, más abajo) usan el
+  // MISMO medidor de potencia que los botones táctiles, no uno propio. `ACTION_BOX` es el lado del
+  // cuadrado que contiene el rombo de 4 botones (2 botones + 1 espacio, de punta a punta).
+  const ACTION_BTN_SIZE = 74
+  const ACTION_GAP = 14
+  const ACTION_BOX = ACTION_BTN_SIZE * 2 + ACTION_GAP
+  const CHARGE_MS = 1100
 
-  // ---------- esquema "botones": pase y tiro con medidor de potencia ----------
+  // ---------- esquema "botones": 4 botones (pase / pase fuerte / tiro / tiro fuerte) ----------
   // Sin gesto de arrastre acá: mantener carga potencia (0→1 en 1.1s), soltar dispara con esa
   // potencia (mínimo 0.15, para que un toque rápido igual haga algo). Van por la misma cola
   // `pending` que el resto, para quedar sincronizados con el paso fijo de física.
-  // Tamaño y estética "mando de NES": más grandes que antes (74→96px) y con un cuerpo abombado
-  // (degradé + sombra), no un círculo plano — se leen como un botón de verdad, no como un ícono.
+  // Estética "vidrio esmerilado": relleno semitransparente + `backdrop-filter` + un solo resplandor
+  // de color, en vez de la pila de sombras 3D de antes — más liviano de pintar (menos capas) y, a
+  // la vez, más prolijo: no compite con el arte de la cancha, se ve como parte de la interfaz, no
+  // como un mando de plástico pegado encima. Acomodados en rombo (como el de un control de consola
+  // — PASE abajo, TIRO a la derecha, FUERTE a la izquierda, TIRO FUERTE arriba) en vez de una fila:
+  // una fila de 4 no entra cómoda en el ancho de un celular en vertical, un rombo sí.
   let actionButtons: HTMLElement | null = null
+  let superFlashBtn: HTMLElement | null = null
+  function flashSuperButton() {
+    if (!superFlashBtn) return
+    superFlashBtn.style.animation = "none"
+    // fuerza un reflow para que el navegador "olvide" la animación anterior y la vuelva a tocar
+    // desde cero — si no, dos súper tiros seguidos podían no re-disparar el flash.
+    void superFlashBtn.offsetWidth
+    superFlashBtn.style.animation = "fp-superflash 550ms ease-out"
+  }
   if (o.controlScheme === "botones") {
-    // Aclara (t>0) u oscurece (t<0, hacia negro) un color hex — para el degradé/sombra "abombados"
-    // de los botones NES-style. t en -1..1.
-    const shadeHex = (hex: string, t: number): string => {
+    const glassColor = (hex: string, a: number): string => {
       const n = parseInt(hex.slice(1), 16)
-      const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255
-      const mix = (c: number) => Math.max(0, Math.min(255, Math.round(t >= 0 ? c + (255 - c) * t : c * (1 + t))))
-      return `rgb(${mix(r)},${mix(g)},${mix(b)})`
+      return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
     }
-    const CHARGE_MS = 1100
     const BTN_SIZE = ACTION_BTN_SIZE
-    const mkButton = (label: string, action: "pase" | "pase-fuerte" | "tiro", color: string) => {
+    const mkButton = (label: string, action: "pase" | "pase-fuerte" | "tiro" | "tiro-fuerte", color: string) => {
       const fill = document.createElement("div")
-      fill.style.cssText = `position:absolute;left:0;right:0;bottom:0;height:0%;background:${color};opacity:.5;pointer-events:none;transition:height 60ms linear;mix-blend-mode:screen`
+      fill.style.cssText = `position:absolute;left:0;right:0;bottom:0;height:0%;background:${color};opacity:.55;pointer-events:none;transition:height 60ms linear;mix-blend-mode:screen;border-radius:0 0 50% 50%/0 0 30% 30%`
       const btn = document.createElement("button")
       btn.type = "button"
       btn.setAttribute("aria-label",
         action === "tiro" ? "Tiro (mantener carga potencia)"
+          : action === "tiro-fuerte" ? "Tiro fuerte (súper tiro) — mantener carga potencia"
           : action === "pase-fuerte" ? "Pase fuerte (mantener carga potencia) — directo al mejor compañero, más rápido y más difícil de cortar"
           : "Pase (mantener carga potencia)")
-      btn.style.cssText = `position:relative;overflow:hidden;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
-        `border:4px solid ${shadeHex(color, -0.25)};` +
-        `background:radial-gradient(circle at 34% 28%, ${shadeHex(color, 0.35)}, ${color} 46%, ${shadeHex(color, -0.35)} 100%);` +
-        `box-shadow:0 5px 0 ${shadeHex(color, -0.5)}, 0 7px 10px rgba(0,0,0,.55), inset 0 2px 3px rgba(255,255,255,.45);` +
-        `color:#0a0a0a;text-shadow:0 1px 0 rgba(255,255,255,.35);font:900 15px inherit;letter-spacing:.05em;touch-action:none;-webkit-touch-callout:none;` +
+      btn.style.cssText = `position:absolute;overflow:hidden;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
+        `background:${glassColor(color, 0.22)};backdrop-filter:blur(9px) saturate(160%);-webkit-backdrop-filter:blur(9px) saturate(160%);` +
+        `border:1.5px solid ${glassColor(color, 0.65)};` +
+        `box-shadow:0 0 14px ${glassColor(color, 0.35)}, inset 0 1px 2px rgba(255,255,255,.25), inset 0 -6px 10px rgba(0,0,0,.18);` +
+        `color:#f8fafc;text-shadow:0 1px 3px rgba(0,0,0,.6);font:800 12px inherit;letter-spacing:.04em;touch-action:none;-webkit-touch-callout:none;` +
         `transition:transform 70ms ease,box-shadow 70ms ease`
       btn.appendChild(fill)
       const span = document.createElement("span")
@@ -402,11 +416,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       const start = (e: PointerEvent) => {
         e.preventDefault()
         sfx.unlock()
-        fill.style.background = color
-        // "Presionado": se hunde un toque y pierde la sombra de despegue — el feedback táctil de
-        // un botón de verdad, no solo el relleno de carga.
-        btn.style.transform = "scale(0.93) translateY(2px)"
-        btn.style.boxShadow = `0 2px 0 ${shadeHex(color, -0.5)}, 0 3px 5px rgba(0,0,0,.5), inset 0 2px 3px rgba(255,255,255,.3)`
+        fill.style.background = action === "tiro-fuerte" ? "#f97316" : color
+        // "Presionado": se hunde un toque y el resplandor se aviva — el feedback táctil de un botón
+        // de verdad, sin la pila de sombras 3D de antes (más liviano de pintar).
+        btn.style.transform = "scale(0.91)"
+        btn.style.boxShadow = `0 0 22px ${glassColor(color, 0.6)}, inset 0 1px 2px rgba(255,255,255,.3), inset 0 -6px 10px rgba(0,0,0,.22)`
         startedAt = performance.now()
         cancelAnimationFrame(raf)
         raf = requestAnimationFrame(tick)
@@ -414,7 +428,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       const release = () => {
         cancelAnimationFrame(raf)
         btn.style.transform = ""
-        btn.style.boxShadow = `0 5px 0 ${shadeHex(color, -0.5)}, 0 7px 10px rgba(0,0,0,.55), inset 0 2px 3px rgba(255,255,255,.45)`
+        btn.style.boxShadow = `0 0 14px ${glassColor(color, 0.35)}, inset 0 1px 2px rgba(255,255,255,.25), inset 0 -6px 10px rgba(0,0,0,.18)`
         if (startedAt === 0) return
         const power = Math.max(0.15, Math.min(1, (performance.now() - startedAt) / CHARGE_MS))
         startedAt = 0
@@ -426,17 +440,39 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       btn.addEventListener("pointercancel", release)
       return btn
     }
+    // Rombo: lado (BTN_SIZE + gap), centrado en un contenedor cuadrado (`ACTION_BOX`, hoisted arriba).
+    const side = BTN_SIZE + ACTION_GAP
+    const place = (el: HTMLElement, left: number, top: number) => { el.style.left = `${left}px`; el.style.top = `${top}px` }
     actionButtons = document.createElement("div")
-    actionButtons.style.cssText = "position:absolute;right:14px;bottom:14px;display:flex;gap:14px;z-index:5;transition:opacity 150ms linear"
-    actionButtons.appendChild(mkButton("PASE", "pase", "#4ade80"))
-    actionButtons.appendChild(mkButton("FUERTE", "pase-fuerte", "#38bdf8"))
-    actionButtons.appendChild(mkButton("TIRO", "tiro", "#facc15"))
+    actionButtons.style.cssText = `position:absolute;right:14px;bottom:14px;width:${ACTION_BOX}px;height:${ACTION_BOX}px;z-index:5;transition:opacity 150ms linear`
+    const btnPase = mkButton("PASE", "pase", "#4ade80")
+    const btnFuerte = mkButton("FUERTE", "pase-fuerte", "#38bdf8")
+    const btnTiro = mkButton("TIRO", "tiro", "#facc15")
+    const btnSuper = mkButton("SÚPER", "tiro-fuerte", "#f97316")
+    place(btnFuerte, 0, side / 2 - BTN_SIZE / 2)
+    place(btnSuper, side / 2 - BTN_SIZE / 2, 0)
+    place(btnTiro, side, side / 2 - BTN_SIZE / 2)
+    place(btnPase, side / 2 - BTN_SIZE / 2, side)
+    actionButtons.append(btnFuerte, btnSuper, btnTiro, btnPase)
+    superFlashBtn = btnSuper
     container.appendChild(actionButtons)
   }
 
-  // ---------- teclado en escritorio: WASD/flechas mueven, Espacio tira/pasa ----------
+  // ---------- teclado en escritorio: WASD/flechas mueven, Espacio pasa, Q/J/K/L el resto --------
   // Independiente del mouse: en escritorio ya no hace falta arrastrar para moverse, el
   // mouse queda libre para apuntar el flick en toda la pantalla.
+  // Q cambia de jugador (como el botón de la pausa). J/K/L son pase corto / tiro / pase largo —
+  // MISMO medidor de potencia que los botones táctiles del esquema "botones" (mantener carga,
+  // soltar dispara): no son un gesto aparte, van por la misma cola `pending` que todo lo demás.
+  // Disponibles pase lo que pase el esquema de control elegido (honda o botones): son un atajo de
+  // teclado, no dependen de qué toque la pantalla.
+  const KEY_ACTION: Partial<Record<string, "pase" | "tiro" | "pase-fuerte" | "tiro-fuerte">> = {
+    KeyJ: "pase",
+    KeyK: "tiro",
+    KeyL: "pase-fuerte",
+    KeyI: "tiro-fuerte",
+  }
+  const keyChargeStart = new Map<string, number>()
   const pressedKeys = new Set<string>()
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
@@ -446,9 +482,30 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     if (isShootKey(e.code)) {
       e.preventDefault() // que Espacio no scrollee la página
       if (!e.repeat && !paused && !ended && !o.demo && !o.spectator) pending.push({ kind: "tap" })
+      return
+    }
+    if (e.code === "KeyQ") {
+      e.preventDefault()
+      if (!e.repeat && !paused && !ended) cyclePlayer()
+      return
+    }
+    if (KEY_ACTION[e.code] && !e.repeat) {
+      e.preventDefault()
+      keyChargeStart.set(e.code, performance.now())
     }
   }
-  const onKeyUp = (e: KeyboardEvent) => { pressedKeys.delete(e.code) }
+  const onKeyUp = (e: KeyboardEvent) => {
+    pressedKeys.delete(e.code)
+    const action = KEY_ACTION[e.code]
+    const startedAt = keyChargeStart.get(e.code)
+    if (action && startedAt !== undefined) {
+      keyChargeStart.delete(e.code)
+      if (!paused && !ended && !o.demo && !o.spectator) {
+        const power = Math.max(0.15, Math.min(1, (performance.now() - startedAt) / CHARGE_MS))
+        pending.push({ kind: "button", action, power })
+      }
+    }
+  }
   window.addEventListener("keydown", onKeyDown)
   window.addEventListener("keyup", onKeyUp)
 
@@ -505,6 +562,19 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         const speed = powerFromFlick(1.2 + Math.max(0, Math.min(1, ev.power)) * 4.8)
         const r = assistAim(world, s.id, s.heading, speed)
         if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
+      } else if (ev.action === "tiro-fuerte") {
+        // El botón "de lujo": a diferencia de "tiro", esto SIEMPRE apunta a rango de súper tiro —
+        // hasta con la carga mínima (0.15) ya alcanza (ver la cuenta en el comentario de arriba de
+        // `ActionEvent`). Si el jugador tiene con qué pagarlo, sale encendido de una — si no, `kick()`
+        // igual lo limita solo, como cualquier súper tiro sin tanque (no hace falta duplicar esa
+        // lógica acá). El flash de neón del botón se dispara mirando `world.puck.superShot` DESPUÉS
+        // de patear (la fuente de verdad real, no "si lo intentamos").
+        const power = Math.max(0, Math.min(1, ev.power))
+        const speed = powerFromFlick(4.2 + power * 1.8)
+        const r = assistAim(world, s.id, s.heading, speed)
+        const kicked = kick(world, s.id, r.angle, r.speed)
+        if (kicked && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
+        if (kicked && world.puck.superShot) flashSuperButton()
       } else if (ev.action === "pase-fuerte") {
         // Mismo destino que "pase" (el mejor compañero libre) pero de salida directa y fuerte: no
         // depende de cuánto se cargó el botón para ser "fuerte" — el medidor solo le agrega un
@@ -795,10 +865,10 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       scorePanelShift += (target - scorePanelShift) * k
 
       if (actionButtons) {
-        // Zona real (pantalla, sin rotar) que ocupan PASE/FUERTE/TIRO: ver el `right:14px;bottom:14px`
-        // con el que se arman más abajo (3 botones, 2 espacios de 14px entre ellos).
-        const btnL = cssW - 14 - (ACTION_BTN_SIZE * 3 + 14 * 2)
-        const btnT = cssH - 14 - ACTION_BTN_SIZE
+        // Zona real (pantalla, sin rotar) que ocupa el rombo de botones: ver el
+        // `right:14px;bottom:14px` con el que se arma más abajo (`ACTION_BOX` = lado del cuadrado).
+        const btnL = cssW - 14 - ACTION_BOX
+        const btnT = cssH - 14 - ACTION_BOX
         const underButtons = (vx: number, vy: number) => {
           const p = virtualToScreen(vx, vy)
           return p.x >= btnL - 20 && p.y >= btnT - 20
@@ -883,6 +953,20 @@ function drawTouchOverlay(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     const ky = st.oy + Math.max(-1, Math.min(1, (st.cy - st.oy) / st.radius)) * st.radius
     ctx.fillStyle = "rgba(255,255,255,0.55)"
     ctx.beginPath(); ctx.arc(kx, ky, st.radius * 0.36, 0, Math.PI * 2); ctx.fill()
+  } else if (input.buttonsMode) {
+    // Esquema "botones": sin dedo abajo, el joystick "flotante" no tiene nada que dibujar — la
+    // pantalla se veía sin ningún pad hasta tocarla. Este círculo fantasma, siempre visible, marca
+    // dónde vive el pad de movimiento (como el pad fijo de un control de consola) aunque no lo
+    // estés tocando; apenas apoyás el dedo, el de arriba (`st`) toma la posta y se ve normal.
+    const r = input.radius
+    const ax = input.leftHanded ? cam.vw - r * 1.6 : r * 1.6
+    const ay = cam.vh - r * 1.8
+    ctx.lineWidth = 2.5
+    ctx.strokeStyle = "rgba(255,255,255,0.16)"
+    ctx.fillStyle = "rgba(255,255,255,0.045)"
+    ctx.beginPath(); ctx.arc(ax, ay, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+    ctx.fillStyle = "rgba(255,255,255,0.22)"
+    ctx.beginPath(); ctx.arc(ax, ay, r * 0.36, 0, Math.PI * 2); ctx.fill()
   }
   const aim = input.aim
   const carrier = w.puck.carrierId ? findSkater(w, w.puck.carrierId) : undefined

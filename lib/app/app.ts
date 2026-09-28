@@ -268,7 +268,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         segmented<string>("Dedos", "hand", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => { s.leftHanded = v === "l"; persist(); render() }),
         segmented<"honda" | "botones">("Control", "control-scheme", [
           { value: "honda", label: "Honda (estirar y soltar)" },
-          { value: "botones", label: "Botones (stick + pase/pase fuerte/tiro)" },
+          { value: "botones", label: "Botones (stick + 4 botones: pase/fuerte/tiro/súper)" },
         ], s.controlScheme, (v) => { s.controlScheme = v; persist(); render() }),
         segmented<string>("Sonido", "snd", [{ value: "on", label: "Con sonido" }, { value: "off", label: "Silencio" }], s.sound ? "on" : "off", (v) => { s.sound = v === "on"; persist(); render() }),
         segmented<Settings["music"]>("Música de fondo", "music", [{ value: "on", label: "Prendida" }, { value: "low", label: "Atenuada" }, { value: "off", label: "Apagada" }], s.music, (v) => { s.music = v; persist(); render() }),
@@ -595,6 +595,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         h("p", { class: "fp-note" }, "Izquierdo (o WASD/flechas): movés al jugador que lleva el puck."),
         h("p", { class: "fp-note" }, "Derecho: deslizá para pasar o tirar — roce suave es pase, latigazo es tiro."),
         h("p", { class: "fp-note" }, "Tocá a un compañero (con cualquier dedo, hasta con el izquierdo) para pasarle. Un toque suelto a la derecha (o Espacio) es pase automático al mejor."),
+        h("p", { class: "fp-note" }, "En computadora: Q cambia de jugador; J pase corto, K tiro, L pase largo, I tiro fuerte/súper (mantené para cargar potencia, soltá para patear)."),
         h("button", { class: "fp-btn solid", "data-key": "tutorial-ok", onclick: () => dismiss(false) }, "Entendido"),
         h("button", { class: "fp-btn", "data-key": "tutorial-never", onclick: () => dismiss(true) }, "No volver a mostrar"),
       )
@@ -1159,7 +1160,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       }),
       segmented<"honda" | "botones">("Esquema", "scheme-pause", [
         { value: "honda", label: "Honda (estirar y soltar)" },
-        { value: "botones", label: "Botones (stick + pase/pase fuerte/tiro)" },
+        { value: "botones", label: "Botones (stick + 4 botones: pase/fuerte/tiro/súper)" },
       ], s.controlScheme, (v) => {
         if (v === s.controlScheme) return
         showDialog("¿Cambiar de esquema de control?", "Esto reinicia el partido — no hay forma de cambiar los botones en pantalla sin volver a armar la cancha.", [

@@ -67,17 +67,41 @@ export const DEFAULT_SETTINGS: Settings = {
   cantoniUnlocked: false,
 }
 
-/** localStorage si existe y funciona (modo privado, cookies bloqueadas, SSR => null). */
-export function safeStorage(): Storage | null {
+/** Prueba si `candidate` (localStorage o sessionStorage) existe y de verdad deja escribir —
+ *  algunos navegadores lo exponen pero tiran excepción al usarlo (modo privado estricto, cookies
+ *  de terceros bloqueadas, un iframe con sandbox sin `allow-same-origin`, etc.). */
+function probeStorage(candidate: Storage | undefined | null): Storage | null {
   try {
-    if (typeof window === "undefined" || !window.localStorage) return null
+    if (!candidate) return null
     const k = "__fp_probe__"
-    window.localStorage.setItem(k, "1")
-    window.localStorage.removeItem(k)
-    return window.localStorage
+    candidate.setItem(k, "1")
+    candidate.removeItem(k)
+    return candidate
   } catch {
     return null
   }
+}
+
+/** localStorage si existe y funciona; si no, sessionStorage como red de contención. localStorage
+ *  es lo normal (sobrevive a cerrar la pestaña); pero si algo del entorno lo bloquea (modo privado
+ *  estricto, un iframe sandboxeado sin `allow-same-origin` — pasa seguido al probar la app adentro
+ *  de un visor/preview embebido — o simplemente cookies/storage de terceros deshabilitado),
+ *  sessionStorage al menos sobrevive a un F5 (recargar la página), que es el caso que de verdad
+ *  se siente como "se resetea todo": sin ESTO, cada F5 arrancaba de cero por completo, silencioso,
+ *  porque `probeStorage(window.localStorage)` fallaba y no había ningún plan B. Avisa por consola
+ *  (una sola vez) cuándo pasa esto, para poder diagnosticarlo si vuelve a aparecer. */
+let warnedStorageFallback = false
+export function safeStorage(): Storage | null {
+  if (typeof window === "undefined") return null
+  const ls = probeStorage(window.localStorage)
+  if (ls) return ls
+  const ss = probeStorage(window.sessionStorage)
+  if (ss && !warnedStorageFallback) {
+    warnedStorageFallback = true
+    // eslint-disable-next-line no-console
+    console.warn("[funko-patin] localStorage no está disponible acá — usando sessionStorage (sobrevive a F5, no a cerrar la pestaña). Los equipos, la Copa y los desbloqueos no van a quedar guardados de una sesión a otra.")
+  }
+  return ss
 }
 
 export function allTeams(saved: Saved): Team[] {
@@ -96,7 +120,8 @@ export function normalize(saved: Saved): Saved {
   return saved
 }
 
-/** Lee lo guardado. Nunca lanza: ante cualquier dato roto vuelve a los valores por defecto. */
+/** Lee lo guardado. Nunca lanza: ante cualquier dato roto vuelve a los valores por defecto (avisa
+ *  por consola, para poder diagnosticarlo — antes fallaba en silencio). */
 export function load(storage: Storage | null = safeStorage()): Saved {
   const fresh = (): Saved => ({ customTeams: [], settings: { ...DEFAULT_SETTINGS }, cup: null })
   if (!storage) return fresh()
@@ -138,7 +163,9 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.cantoniUnlocked === "boolean") out.settings.cantoniUnlocked = s.cantoniUnlocked
     out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[funko-patin] no se pudo leer lo guardado — arrancando de cero.", err)
     return fresh()
   }
 }
@@ -148,7 +175,9 @@ export function save(saved: Saved, storage: Storage | null = safeStorage()): boo
   try {
     storage.setItem(STORAGE_KEY, JSON.stringify({ v: 1, customTeams: saved.customTeams, settings: saved.settings, cup: saved.cup }))
     return true
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[funko-patin] no se pudo guardar (¿quota llena?).", err)
     return false
   }
 }
