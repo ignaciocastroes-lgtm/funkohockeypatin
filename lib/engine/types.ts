@@ -46,6 +46,8 @@ export interface Goalie {
    *  patinador) de golpe y volver a girar hacia la nueva trayectoria, en vez de seguir apuntando
    *  adonde iba ANTES del desvío. null si no hay un tiro en curso. */
   lastShotAngle: number | null
+  /** Segundos que lleva la bocha quieta pegada al arquero (para el despeje automático). */
+  holdTimer?: number
 }
 
 export interface Puck {
@@ -70,6 +72,10 @@ export type GameEvent =
   | { type: "kick"; id: string; speed: number; superShot?: boolean }
   | { type: "pickup"; id: string }
   | { type: "steal"; id: string; from: string }
+  /** Botón de quitar (humano). `hit` = le sacó la pelota / la tocó; false = falló y queda trabado un rato. */
+  | { type: "tackle"; id: string; strong: boolean; hit: boolean }
+  /** El arquero se quedó con la pelota quieta y la despeja solo (pierna de despeje + sonido). */
+  | { type: "goalieClear"; side: Side; ny: number }
   | { type: "spill"; id: string; impact: number }
   | { type: "hit"; a: string; b: string; impact: number }
   | { type: "board"; speed: number }

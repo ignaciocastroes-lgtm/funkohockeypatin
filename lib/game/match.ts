@@ -5,6 +5,7 @@ import {
   RINK,
   SKATER,
   STAMINA,
+  SUPER_SHOT_COST,
   TeamAI,
   assistAim,
   awardPenalty,
@@ -19,10 +20,11 @@ import {
   setInput,
   startSuddenDeath,
   stepWorld,
+  tackle,
   teammateAtPoint,
 } from "../engine"
+import type { GameEvent } from "../engine"
 import type { ActionEvent } from "./input"
-import { FLICK_MAX_DIST, FLICK_MIN_DIST } from "./input"
 import { applyShootoutAttempt, initialShootout } from "./shootout"
 import type { ShootoutResult, ShootoutState } from "./shootout"
 export type { ShootoutResult } from "./shootout"
@@ -32,7 +34,12 @@ import type { GoalieSaveFX, Venue } from "./draw"
 import { canvasFontFamily, plateSize } from "./cues"
 import { Confetti, ReplayBuffer, SuperTrail, drawFlash, replayFrameAt, replayWorld } from "./effects"
 import type { Flash, GoalReplay } from "./effects"
+import { tr } from "./i18n"
+import { BTN_POWER, performButton } from "./actions"
+import type { GuestSession, HostSession } from "../net/session"
+import { applySnapshot, makeSnapshot } from "../net/snapshot"
 import { TouchInput, isShootKey, keyboardVector } from "./input"
+import { actionLayout } from "./action-layout"
 import { Crowd } from "./crowd"
 import { DemoTutor } from "./demo-tutor"
 import { DemoDirector } from "./demo-director"
@@ -69,10 +76,6 @@ export interface MatchOptions {
   /** Segundos. */
   duration: number
   leftHanded?: boolean
-  /** Esquema de control: "honda" (por defecto, estirás y soltás como una honda) o "botones"
-   *  (arcade clásico — el dedo maneja como un stick en toda la pantalla, pase y tiro son botones
-   *  aparte con medidor de potencia). */
-  controlScheme?: "honda" | "botones"
   sound?: boolean
   /** Música de fondo (fiesta de las gradas). Por defecto "on". */
   music?: MusicLevel
@@ -109,6 +112,11 @@ export interface MatchOptions {
   shootout?: boolean
   /** Se llama una vez cuando termina la tanda de penales (solo con `shootout: true`). */
   onShootoutEnd?: (r: ShootoutResult) => void
+  /** 2P online. `host`: este dispositivo SIMULA (equipo local = lado 0) y el invitado juega el lado 1.
+   *  `guest`: no simula nada — dibuja lo que manda el host y le devuelve su stick y sus botones. */
+  net?: { role: "host"; session: HostSession } | { role: "guest"; session: GuestSession }
+  /** Se cortó la conexión con el otro jugador (solo con `net`). */
+  onNetClosed?: () => void
   /** Se llama una vez cuando suena el final. */
   onEnd?: (r: MatchResult) => void
   /** La pestaña se ocultó: el partido se pausó solo. */
@@ -125,11 +133,14 @@ export interface MatchResult {
 
 export type ViewMode = "auto" | "full" | "three-quarter"
 
-/** Desde qué fracción de estirón/carga (0..1) un tiro ya califica como supertiro — se deriva de
- *  `powerFromFlick()` y `STAMINA.superShotMinSpeed`, no es un número fijo: si cualquiera de las dos
- *  cambia, este umbral se recalcula solo. Se usa para la señal visual (línea/botón que avisan "ya
- *  es supertiro"), en los dos esquemas de control. */
-const SUPER_PULL_THRESHOLD = (STAMINA.superShotMinSpeed - 9) / (SKATER.kickMaxSpeed - 2 - 9)
+/** Pone el rótulo de un botón redondo y achica la letra según la palabra más larga (en portugués
+ *  "DESARMAR" no entra a 11 px en un círculo de 68 px). */
+export function fitLabel(span: HTMLElement, text: string) {
+  span.textContent = text
+  const longest = Math.max(1, ...text.split("\n").map((line) => line.replace(/[^\p{L}]/gu, "").length))
+  span.style.fontSize = longest >= 8 ? "9px" : longest >= 6 ? "10px" : ""
+  span.style.letterSpacing = longest >= 6 ? "0" : ""
+}
 
 export interface MatchHandle {
   destroy(): void
@@ -146,8 +157,7 @@ export interface MatchHandle {
    *  base — esto es para cuando esa elección no es la que se quiere). No hace nada en el demo. */
   cyclePlayer(): void
   /** Diestro/zurdo, en vivo, sin reiniciar el partido (desde la pausa) — solo cambia de qué lado de
-   *  la pantalla sale cada rol, el esquema de control en sí (honda/botones) no se puede cambiar así:
-   *  el de botones tiene sus propios botones en el DOM, armados una sola vez al montar el partido. */
+   *  la pantalla sale cada rol, los botones están en el DOM, armados una sola vez al montar el partido. */
   setLeftHanded(v: boolean): void
   /** Modo ahorro en vivo (ver `MatchOptions.graphicsSaver`), sin reiniciar el partido. */
   setGraphicsSaver(v: boolean): void
@@ -191,15 +201,27 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     kinds: [o.teams[0].kinds, o.teams[1].kinds],
     names: [o.teams[0].names, o.teams[1].names],
   })
+  // ---------- 2P online ----------
+  const netHost = o.net?.role === "host" ? o.net.session : null
+  const netGuest = o.net?.role === "guest" ? o.net.session : null
+  /** El lado que juega ESTE dispositivo: el invitado juega la derecha (lado 1). */
+  const mySide: Side = netGuest ? 1 : 0
+  /** Host: qué patinador maneja el invitado (lo elige el host con la misma regla que al humano local). */
+  let guestCtl: string | null = null
+  const outEvents: GameEvent[] = []
+  let lastSnapAt = 0
+  let lastStickAt = 0
+  let snapAt = 0
+  const SNAP_MS = 50 // el host manda ~20 snapshots por segundo
   const ai = new TeamAI({ skill: o.aiSkill ?? [0.7, NIVEL_SKILL[o.nivel]], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
   const stepper = new FixedStepper()
   const cam = new Camera()
-  const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded, buttonsMode: o.controlScheme === "botones" })
+  const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded })
   const sfx = new Sfx()
   sfx.muted = o.sound === false
   // Público de las gradas (murmullo, ovaciones, reacciones). El entrenamiento es práctica en soledad: sin público.
   // En el demo (IA vs IA) no hay equipo "propio": festeja parejo.
-  const crowd = o.training ? null : new Crowd(sfx, (o.demo || o.spectator) ? null : 0)
+  const crowd = o.training ? null : new Crowd(sfx, (o.demo || o.spectator) ? null : mySide)
   crowd?.setMusic(o.music ?? "on")
   // Solo en modo demo: reconoce en vivo las 4 jugadas que enseñan el juego (toque, golazo,
   // súper tiro, defensa) y recién cuando ya narró las 4 deja pasar el "TOCÁ PARA JUGAR".
@@ -252,7 +274,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   }
   const result: MatchResult = { score: [0, 0], fouls: [0, 0], steals: [0, 0], passes: [0, 0], shots: [0, 0] }
 
-  let controlledId: string | null = selectControlled(world, 0, null)
+  let controlledId: string | null = netGuest ? null : selectControlled(world, 0, null)
   let cssW = 1
   let cssH = 1
   let dpr = 1
@@ -309,10 +331,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const virtualToScreen = (vx: number, vy: number) => (portraitNow() ? { x: cssW - vy, y: vx } : { x: vx, y: vy })
 
   // NO hay pellizco de dos dedos para el zoom, A PROPÓSITO — hubo uno acá y era un bug grave: el
-  // control de honda/botones NECESITA los dos pulgares tocando la pantalla A LA VEZ (uno mueve, el
-  // otro tira), y un pellizco-para-zoom dispara apenas toca el SEGUNDO dedo, sin importar la
-  // intención — cancelaba el joystick del primer dedo y jamás llegaba a registrar el tiro del
-  // segundo. Si algún día se quiere zoom táctil, tiene que convivir con el control de dos dedos
+  // control NECESITA los dos pulgares a la vez (uno en el stick, el otro en los botones), y un
+  // pellizco-para-zoom dispara apenas toca el SEGUNDO dedo, sin importar la intención — cancelaba
+  // el joystick del primer dedo y jamás llegaba a registrar el botón del segundo. Si algún día se quiere zoom táctil, tiene que convivir con el control de dos dedos
   // (por ejemplo, solo con un tercer dedo), no disparar con cualquier segundo toque. El botón de
   // vista (SEG/TOT/3/4) ya cubre "ver más cancha" sin este riesgo.
   const onDown = (e: PointerEvent) => {
@@ -353,14 +374,16 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   // necesita. `CHARGE_MS` también sale de acá: los atajos de teclado (J/K/L/I, más abajo) usan el
   // MISMO medidor de potencia que los botones táctiles, no uno propio. `ACTION_BOX` es el lado del
   // cuadrado que contiene el rombo de 4 botones (2 botones + 1 espacio, de punta a punta).
-  const ACTION_BTN_SIZE = 74
-  const ACTION_GAP = 14
-  const ACTION_BOX = ACTION_BTN_SIZE * 2 + ACTION_GAP
-  const CHARGE_MS = 1100
+  const ACTION_BTN_SIZE = 68
+  const ACTION_GAP = 12
+  // Rombo SIN solapar: los centros de botones vecinos quedan a `diag`, que tiene que ser > ACTION_BTN_SIZE.
+  // Antes era (74+14)/2*sqrt2 = 62 px < 74 px de diámetro → SÚPER tapaba a FUERTE.
+  const AL = actionLayout(ACTION_BTN_SIZE, ACTION_GAP)
+  const ACTION_DIAG = Math.ceil(ACTION_BTN_SIZE + ACTION_GAP)
+  const ACTION_BOX = AL.box
 
   // ---------- esquema "botones": 4 botones (pase / pase fuerte / tiro / tiro fuerte) ----------
-  // Sin gesto de arrastre acá: mantener carga potencia (0→1 en 1.1s), soltar dispara con esa
-  // potencia (mínimo 0.15, para que un toque rápido igual haga algo). Van por la misma cola
+  // Sin gesto de arrastre ni medidor: apretar dispara al instante con potencia fija (BTN_POWER). Van por la misma cola
   // `pending` que el resto, para quedar sincronizados con el paso fijo de física.
   // Estética "vidrio esmerilado": relleno semitransparente + `backdrop-filter` + un solo resplandor
   // de color, en vez de la pila de sombras 3D de antes — más liviano de pintar (menos capas) y, a
@@ -369,7 +392,12 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   // — PASE abajo, TIRO a la derecha, FUERTE a la izquierda, TIRO FUERTE arriba) en vez de una fila:
   // una fila de 4 no entra cómoda en el ancho de un celular en vertical, un rombo sí.
   let actionButtons: HTMLElement | null = null
+  const leftHandedNow = () => input.leftHanded
   let superFlashBtn: HTMLElement | null = null
+  let superReady = false
+  // Botones por posición, para cambiarles el rótulo según ataque (con la pelota) o defensa (sin ella).
+  let ctxBtns: { pase: HTMLElement; fuerte: HTMLElement; tiro: HTMLElement; top: HTMLElement } | null = null
+  let defenseLabels = false
   function flashSuperButton() {
     if (!superFlashBtn) return
     superFlashBtn.style.animation = "none"
@@ -377,102 +405,81 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     // desde cero — si no, dos súper tiros seguidos podían no re-disparar el flash.
     void superFlashBtn.offsetWidth
     superFlashBtn.style.animation = "fp-superflash 550ms ease-out"
+    superReady = !superReady // fuerza a re-evaluar la estrella en el próximo cuadro (el súper gastó la mitad del tanque)
+    setTimeout(() => { if (superFlashBtn) superFlashBtn.style.animation = "none" }, 560)
   }
-  if (o.controlScheme === "botones") {
+  {
     const glassColor = (hex: string, a: number): string => {
       const n = parseInt(hex.slice(1), 16)
       return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
     }
     const BTN_SIZE = ACTION_BTN_SIZE
     const mkButton = (label: string, action: "pase" | "pase-fuerte" | "tiro" | "tiro-fuerte", color: string) => {
-      const fill = document.createElement("div")
-      fill.style.cssText = `position:absolute;left:0;right:0;bottom:0;height:0%;background:${color};opacity:.55;pointer-events:none;transition:height 60ms linear;mix-blend-mode:screen;border-radius:0 0 50% 50%/0 0 30% 30%`
       const btn = document.createElement("button")
       btn.type = "button"
       btn.setAttribute("aria-label",
-        action === "tiro" ? "Tiro (mantener carga potencia)"
-          : action === "tiro-fuerte" ? "Tiro fuerte (súper tiro) — mantener carga potencia"
-          : action === "pase-fuerte" ? "Pase fuerte (mantener carga potencia) — directo al mejor compañero, más rápido y más difícil de cortar"
-          : "Pase (mantener carga potencia)")
+        action === "tiro" ? "Tiro"
+          : action === "tiro-fuerte" ? "Tiro fuerte (se vuelve súper tiro cuando hay estrella)"
+          : action === "pase-fuerte" ? "Pase fuerte — directo al mejor compañero, más rápido y más difícil de cortar"
+          : "Pase")
       btn.style.cssText = `position:absolute;overflow:hidden;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
         `background:${glassColor(color, 0.22)};backdrop-filter:blur(9px) saturate(160%);-webkit-backdrop-filter:blur(9px) saturate(160%);` +
         `border:1.5px solid ${glassColor(color, 0.65)};` +
         `box-shadow:0 0 14px ${glassColor(color, 0.35)}, inset 0 1px 2px rgba(255,255,255,.25), inset 0 -6px 10px rgba(0,0,0,.18);` +
-        `color:#f8fafc;text-shadow:0 1px 3px rgba(0,0,0,.6);font:800 12px inherit;letter-spacing:.04em;touch-action:none;-webkit-touch-callout:none;` +
+        `color:#f8fafc;text-shadow:0 1px 3px rgba(0,0,0,.6);font-family:inherit;font-weight:800;font-size:11px;line-height:1.1;letter-spacing:.03em;touch-action:none;-webkit-touch-callout:none;` +
         `transition:transform 70ms ease,box-shadow 70ms ease`
-      btn.appendChild(fill)
       const span = document.createElement("span")
-      span.style.cssText = "position:relative;pointer-events:none"
-      span.textContent = label
+      span.style.cssText = "position:relative;pointer-events:none;white-space:pre-line"
+      fitLabel(span, tr(label))
       btn.appendChild(span)
-      let startedAt = 0
-      let raf = 0
-      const tick = () => {
-        const p = Math.min(1, (performance.now() - startedAt) / CHARGE_MS)
-        fill.style.height = `${p * 100}%`
-        if (action === "tiro") fill.style.background = p >= SUPER_PULL_THRESHOLD ? "#f97316" : color
-        if (p < 1) raf = requestAnimationFrame(tick)
-      }
-      const start = (e: PointerEvent) => {
-        e.preventDefault()
-        sfx.unlock()
-        fill.style.background = action === "tiro-fuerte" ? "#f97316" : color
-        // "Presionado": se hunde un toque y el resplandor se aviva — el feedback táctil de un botón
-        // de verdad, sin la pila de sombras 3D de antes (más liviano de pintar).
-        btn.style.transform = "scale(0.91)"
-        btn.style.boxShadow = `0 0 22px ${glassColor(color, 0.6)}, inset 0 1px 2px rgba(255,255,255,.3), inset 0 -6px 10px rgba(0,0,0,.22)`
-        startedAt = performance.now()
-        cancelAnimationFrame(raf)
-        raf = requestAnimationFrame(tick)
-      }
-      const release = () => {
-        cancelAnimationFrame(raf)
+      const idle = () => {
         btn.style.transform = ""
         btn.style.boxShadow = `0 0 14px ${glassColor(color, 0.35)}, inset 0 1px 2px rgba(255,255,255,.25), inset 0 -6px 10px rgba(0,0,0,.18)`
-        if (startedAt === 0) return
-        const power = Math.max(0.15, Math.min(1, (performance.now() - startedAt) / CHARGE_MS))
-        startedAt = 0
-        fill.style.height = "0%"
-        if (!paused && !ended && !o.demo && !o.spectator) pending.push({ kind: "button", action, power })
       }
-      btn.addEventListener("pointerdown", start, { passive: false })
-      btn.addEventListener("pointerup", release)
-      btn.addEventListener("pointercancel", release)
+      // Sin medidor: apretar = patear YA (pase/tiro de una). Un solo toque, una sola acción.
+      const press = (e: PointerEvent) => {
+        e.preventDefault()
+        sfx.unlock()
+        btn.style.transform = "scale(0.91)"
+        btn.style.boxShadow = `0 0 22px ${glassColor(color, 0.6)}, inset 0 1px 2px rgba(255,255,255,.3), inset 0 -6px 10px rgba(0,0,0,.22)`
+        if (!paused && !ended && !o.demo && !o.spectator) pending.push({ kind: "button", action, power: BTN_POWER[action] })
+      }
+      btn.addEventListener("pointerdown", press, { passive: false })
+      btn.addEventListener("pointerup", idle)
+      btn.addEventListener("pointercancel", idle)
+      btn.addEventListener("pointerleave", idle)
       return btn
     }
-    // Rombo: lado (BTN_SIZE + gap), centrado en un contenedor cuadrado (`ACTION_BOX`, hoisted arriba).
-    const side = BTN_SIZE + ACTION_GAP
-    const place = (el: HTMLElement, left: number, top: number) => { el.style.left = `${left}px`; el.style.top = `${top}px` }
+    // Rombo real (sin solapar): centro del contenedor + 4 puntos a `d` px en cruz.
+    const place = (el: HTMLElement, [cx, cy]: [number, number]) => { el.style.left = `${cx - BTN_SIZE / 2}px`; el.style.top = `${cy - BTN_SIZE / 2}px` }
     actionButtons = document.createElement("div")
-    actionButtons.style.cssText = `position:absolute;right:14px;bottom:14px;width:${ACTION_BOX}px;height:${ACTION_BOX}px;z-index:5;transition:opacity 150ms linear`
+    actionButtons.style.cssText = `position:absolute;${o.leftHanded ? "left" : "right"}:14px;bottom:14px;width:${ACTION_BOX}px;height:${ACTION_BOX}px;z-index:5;transition:opacity 150ms linear`
     const btnPase = mkButton("PASE", "pase", "#4ade80")
-    const btnFuerte = mkButton("FUERTE", "pase-fuerte", "#38bdf8")
+    const btnFuerte = mkButton("PASE\nFUERTE", "pase-fuerte", "#38bdf8")
     const btnTiro = mkButton("TIRO", "tiro", "#facc15")
-    const btnSuper = mkButton("SÚPER", "tiro-fuerte", "#f97316")
-    place(btnFuerte, 0, side / 2 - BTN_SIZE / 2)
-    place(btnSuper, side / 2 - BTN_SIZE / 2, 0)
-    place(btnTiro, side, side / 2 - BTN_SIZE / 2)
-    place(btnPase, side / 2 - BTN_SIZE / 2, side)
+    const btnSuper = mkButton("TIRO\nFUERTE", "tiro-fuerte", "#f97316")
+    place(btnFuerte, AL.centers.left)
+    place(btnSuper, AL.centers.top)
+    place(btnTiro, AL.centers.right)
+    place(btnPase, AL.centers.bottom)
     actionButtons.append(btnFuerte, btnSuper, btnTiro, btnPase)
     superFlashBtn = btnSuper
+    ctxBtns = { pase: btnPase, fuerte: btnFuerte, tiro: btnTiro, top: btnSuper }
     container.appendChild(actionButtons)
   }
 
   // ---------- teclado en escritorio: WASD/flechas mueven, Espacio pasa, Q/J/K/L el resto --------
   // Independiente del mouse: en escritorio ya no hace falta arrastrar para moverse, el
-  // mouse queda libre para apuntar el flick en toda la pantalla.
+  // mouse queda libre.
   // Q cambia de jugador (como el botón de la pausa). J/K/L son pase corto / tiro / pase largo —
-  // MISMO medidor de potencia que los botones táctiles del esquema "botones" (mantener carga,
-  // soltar dispara): no son un gesto aparte, van por la misma cola `pending` que todo lo demás.
-  // Disponibles pase lo que pase el esquema de control elegido (honda o botones): son un atajo de
-  // teclado, no dependen de qué toque la pantalla.
+  // MISMA potencia fija que los botones táctiles (apretar = patear ya): no son un gesto aparte, van
+  // por la misma cola `pending` que todo lo demás. Un atajo de teclado, no depende de la pantalla.
   const KEY_ACTION: Partial<Record<string, "pase" | "tiro" | "pase-fuerte" | "tiro-fuerte">> = {
     KeyJ: "pase",
     KeyK: "tiro",
     KeyL: "pase-fuerte",
     KeyI: "tiro-fuerte",
   }
-  const keyChargeStart = new Map<string, number>()
   const pressedKeys = new Set<string>()
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
@@ -489,27 +496,20 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       if (!e.repeat && !paused && !ended) cyclePlayer()
       return
     }
-    if (KEY_ACTION[e.code] && !e.repeat) {
+    const act = KEY_ACTION[e.code]
+    if (act) {
       e.preventDefault()
-      keyChargeStart.set(e.code, performance.now())
+      // Sin medidor: al apretar sale YA (pase/tiro de una). `repeat` se ignora para que dejar la
+      // tecla apretada no dispare una ráfaga ni acumule fuerza.
+      if (!e.repeat && !paused && !ended) pending.push({ kind: "button", action: act, power: BTN_POWER[act] })
     }
   }
-  const onKeyUp = (e: KeyboardEvent) => {
-    pressedKeys.delete(e.code)
-    const action = KEY_ACTION[e.code]
-    const startedAt = keyChargeStart.get(e.code)
-    if (action && startedAt !== undefined) {
-      keyChargeStart.delete(e.code)
-      if (!paused && !ended && !o.demo && !o.spectator) {
-        const power = Math.max(0.15, Math.min(1, (performance.now() - startedAt) / CHARGE_MS))
-        pending.push({ kind: "button", action, power })
-      }
-    }
-  }
+  const onKeyUp = (e: KeyboardEvent) => { pressedKeys.delete(e.code) }
   window.addEventListener("keydown", onKeyDown)
   window.addEventListener("keyup", onKeyUp)
 
   const onVisibility = () => {
+    if (o.net) return // 2P: el otro juega en vivo, no se puede congelar la cancha
     if (document.hidden && !paused && !ended) { pause(); o.onAutoPause?.() }
   }
   document.addEventListener("visibilitychange", onVisibility)
@@ -525,6 +525,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
 
   function pause() {
     if (paused || ended) return
+    if (o.net) { releaseFingers(); return } // 2P: el menú de pausa se muestra encima, la cancha sigue en vivo
     paused = true
     releaseFingers()
   }
@@ -548,63 +549,17 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
 
   /** Convierte un gesto en patada. Solo el portador del equipo humano puede patear. */
   function applyAction(ev: ActionEvent) {
+    if (ev.kind === "button") {
+      const res = performButton(world, 0, controlledId, ev.action, ev.power, padAngle())
+      if (res.lockReceiverId) lockReceiver(res.lockReceiverId)
+      if (res.switchTo && !o.demo && !o.spectator) controlledId = res.switchTo
+      if (res.superShot) flashSuperButton()
+      return
+    }
     const cid = world.puck.carrierId
     const s = cid ? findSkater(world, cid) : undefined
     if (!s || s.side !== 0) return
-    if (ev.kind === "flick") {
-      const speed = powerFromFlick(ev.vhPerSec)
-      const r = assistAim(world, s.id, ev.angle, speed)
-      if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
-    } else if (ev.kind === "button") {
-      if (ev.action === "tiro") {
-        // Mismo camino que un estirón a fondo (o corto, según `power`): dirección = hacia dónde
-        // mira el jugador (no hay gesto de arrastre en este esquema).
-        const speed = powerFromFlick(1.2 + Math.max(0, Math.min(1, ev.power)) * 4.8)
-        const r = assistAim(world, s.id, s.heading, speed)
-        if (kick(world, s.id, r.angle, r.speed) && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
-      } else if (ev.action === "tiro-fuerte") {
-        // El botón "de lujo": a diferencia de "tiro", esto SIEMPRE apunta a rango de súper tiro —
-        // hasta con la carga mínima (0.15) ya alcanza (ver la cuenta en el comentario de arriba de
-        // `ActionEvent`). Si el jugador tiene con qué pagarlo, sale encendido de una — si no, `kick()`
-        // igual lo limita solo, como cualquier súper tiro sin tanque (no hace falta duplicar esa
-        // lógica acá). El flash de neón del botón se dispara mirando `world.puck.superShot` DESPUÉS
-        // de patear (la fuente de verdad real, no "si lo intentamos").
-        const power = Math.max(0, Math.min(1, ev.power))
-        const speed = powerFromFlick(4.2 + power * 1.8)
-        const r = assistAim(world, s.id, s.heading, speed)
-        const kicked = kick(world, s.id, r.angle, r.speed)
-        if (kicked && r.target === "teammate" && r.targetId) lockReceiver(r.targetId)
-        if (kicked && world.puck.superShot) flashSuperButton()
-      } else if (ev.action === "pase-fuerte") {
-        // Mismo destino que "pase" (el mejor compañero libre) pero de salida directa y fuerte: no
-        // depende de cuánto se cargó el botón para ser "fuerte" — el medidor solo le agrega un
-        // último empujón (1.4x-1.7x), para que SIEMPRE sea un pase más difícil de cortar que el
-        // suave, no una versión más del mismo gesto.
-        const tid = bestPassTarget(world, s.id)
-        const t = tid ? findSkater(world, tid) : undefined
-        if (!t) return
-        const d0 = Math.hypot(t.x - s.x, t.y - s.y)
-        const flight = Math.min(0.8, d0 / 10)
-        const tx = t.x + t.vx * flight
-        const ty = t.y + t.vy * flight
-        const base = passSpeedFor(Math.hypot(tx - s.x, ty - s.y))
-        const speed = base * (1.4 + Math.max(0, Math.min(1, ev.power)) * 0.3)
-        if (kick(world, s.id, Math.atan2(ty - s.y, tx - s.x), speed)) lockReceiver(t.id)
-      } else {
-        // Pase automático al mejor compañero (igual que el toque suelto), pero la potencia del pase
-        // sí responde al medidor: 0.7x-1.3x la velocidad que ya calcula `passSpeedFor` por distancia.
-        const tid = bestPassTarget(world, s.id)
-        const t = tid ? findSkater(world, tid) : undefined
-        if (!t) return
-        const d0 = Math.hypot(t.x - s.x, t.y - s.y)
-        const flight = Math.min(0.8, d0 / 10)
-        const tx = t.x + t.vx * flight
-        const ty = t.y + t.vy * flight
-        const base = passSpeedFor(Math.hypot(tx - s.x, ty - s.y))
-        const speed = base * (0.7 + Math.max(0, Math.min(1, ev.power)) * 0.6)
-        if (kick(world, s.id, Math.atan2(ty - s.y, tx - s.x), speed)) lockReceiver(t.id)
-      }
-    } else {
+    {
       // Pase de un dedo: si el toque cae sobre un compañero (o su flecha de borde), va a ese; si no,
       // el toque suelto del dedo de acción sigue siendo pase automático al mejor. El toque del dedo de
       // movimiento (`strict`) que no cae sobre nadie no hace nada: no regala la pelota por accidente.
@@ -642,8 +597,18 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
    *  pelota no esté bastante más cerca de otro). No reusa `receiverLock` a propósito: ese se suelta
    *  apenas alguien agarra la pelota (pensado para un pase en el aire), y esto tiene que aguantar
    *  todo el juego abierto, no solo mientras la pelota vuela. */
+  /** Dirección del pad (stick táctil o WASD/flechas) en el espacio del mundo, o null si está suelto.
+   *  El pad ES la dirección del tiro (y apunta el pase): sin tocarlo, se usa hacia dónde mira el jugador. */
+  function padAngle(): number | null {
+    const kb = keyboardVector(pressedKeys)
+    const useKb = kb.x !== 0 || kb.y !== 0
+    const x = useKb ? kb.x : input.moveX
+    const y = useKb ? kb.y : input.moveY
+    return Math.hypot(x, y) >= 0.25 ? Math.atan2(y, x) : null
+  }
+
   function cyclePlayer() {
-    if (o.demo || o.spectator) return
+    if (o.demo || o.spectator || netGuest) return
     const onIce = world.skaters.filter((s) => s.side === 0).sort((a, b) => a.id.localeCompare(b.id))
     if (onIce.length === 0) return
     const idx = onIce.findIndex((s) => s.id === controlledId)
@@ -677,7 +642,95 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let raf = 0
   let last = 0
   let fpsSmooth = 60
+  // Red de contención para vista fija (completa / 3-4): si los cuadros por segundo caen y se quedan
+  // abajo, se activa solo el modo ahorro de tribuna (sin tocar el ajuste del jugador). Vuelve a
+  // apagarse al cambiar de vista. Es lo único que se puede hacer sin medir la GPU real del aparato.
+  let autoSaver = false
+  let lowFpsFrames = 0
   let stepsThisFrame = 0
+
+  /** Reacciona a UN evento del motor (sonido, cartel, festejo...). Lo usan el host (eventos propios) y el invitado (los que le llegan). */
+  function handleEvent(ev: GameEvent, now: number) {
+    countEvent(ev)
+    sfx.play(ev)
+    crowd?.onEvent(ev, world, cam.cx, cam.width)
+    demoTutor?.onEvent(ev, now)
+    if (ev.type === "foul") {
+      banner = { text: `¡FALTA! Tarjeta azul ${names[ev.side]} #${ev.id.slice(1)}`, until: now + 1900 }
+      flash = { color: "#3b82f6", startedAt: now, durationMs: 260 }
+      navigator.vibrate?.(60)
+    } else if (ev.type === "combo") {
+      banner = { text: `${names[ev.side]} — combo ${ev.kind === "attack" ? "de ataque" : "defensivo"} armado`, until: now + 1400 }
+      navigator.vibrate?.(30)
+    } else if (ev.type === "goalieClear") {
+      saveFX[ev.side] = { startedAt: now, ny: ev.ny }
+    } else if (ev.type === "save") {
+      // Solo dibujo: la pierna de despeje del arquero se anima leyendo esto en drawScene
+      // (ver GOALIE_KICK_MS) — no hay nada nuevo que simular, ya pasó.
+      saveFX[ev.side] = { startedAt: now, ny: ev.ny }
+    } else if (ev.type === "sub") {
+      // Antes esto era solo un cartelito de texto (1.4s, fácil de perderse con la jugada
+      // en marcha) y encima no decía QUIÉN salía. El pedido es que el cambio automático
+      // por cansancio se VEA: ahora banda más larga con entra/sale, un chispazo del color
+      // del equipo en el punto exacto de la pista donde entró el fresco, y vibración corta
+      // — el mismo lenguaje visual que ya usa un gol, pero más chico.
+      banner = { text: `Cambio ${names[ev.side]}: sale #${ev.outId.slice(1)} · entra #${ev.inId.slice(1)}`, until: now + 2200 }
+      const fresh = world.skaters.find((sk) => sk.id === ev.inId)
+      if (fresh) {
+        const scr = cam.toScreen(fresh.x, fresh.y)
+        confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffffff"], 26)
+      }
+      navigator.vibrate?.(40)
+    } else if (ev.type === "penalty") {
+      banner = { text: `¡PENAL para ${names[ev.side]}!`, until: now + 2200 }
+      flash = { color: "#facc15", startedAt: now, durationMs: 260 }
+      navigator.vibrate?.([40, 60, 40])
+    } else if (ev.type === "goal") {
+      navigator.vibrate?.(120)
+      flash = { color: colors[ev.side], startedAt: now, durationMs: 220 }
+      lastGoalCombo = !!ev.combo
+      const conceded = GOALS[ev.side === 0 ? 1 : 0]
+      const scr = cam.toScreen(conceded.lineX, conceded.cy)
+      confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffd23f", "#ffffff"], 110)
+      goalReplay = { frames: replayBuf.freeze(), scorerSide: ev.side, startedAt: now, speed: 0.55 }
+      if (shootout && ev.side === shootout.turn) {
+        shootoutAwaitingKickoff = true
+        resolveShootoutAttempt(true)
+      }
+      if (o.training?.penalties && ev.side === 0) penaltyTrainingAwaitingKickoff = true
+    } else if (ev.type === "end" && !ended) {
+      ended = true
+      releaseFingers()
+      result.score = [world.score[0], world.score[1]]
+      result.fouls = [world.fouls[0], world.fouls[1]]
+      // Festejo de partido ganado: un estallido de confeti más grande, desde el medio de la
+      // pantalla — aparte del que ya tira cada gol individual.
+      if (!o.demo && !o.spectator && !o.training && world.score[mySide] > world.score[mySide === 0 ? 1 : 0]) {
+        confetti.spawn(cssW / 2, cssH * 0.35, [colors[0], "#ffd23f", "#ffffff", "#4ade80"], 220)
+      }
+      o.onEnd?.({ ...result })
+    }
+  }
+
+  if (netGuest) {
+    const take = (sn: NonNullable<typeof netGuest.latest>) => { if (applySnapshot(world, sn)) snapAt = performance.now() }
+    netGuest.onSnapshot = take
+    if (netGuest.latest) take(netGuest.latest)
+    netGuest.onClosed = () => { if (!ended && !destroyed) o.onNetClosed?.() }
+  }
+  // 2P: que la pantalla no se apague sola (si el host la bloquea, el navegador congela el juego para los dos).
+  let wakeLock: { release(): Promise<void> } | null = null
+  const grabWakeLock = () => {
+    try {
+      const wl = (navigator as Navigator & { wakeLock?: { request(t: "screen"): Promise<{ release(): Promise<void> }> } }).wakeLock
+      wl?.request("screen").then((l) => { if (destroyed) l.release().catch(() => {}); else wakeLock = l }).catch(() => {})
+    } catch { /* sin wakeLock: se juega igual */ }
+  }
+  const onVisibleAgain = () => { if (!document.hidden && o.net) grabWakeLock() } // el navegador lo suelta al ocultar la pestaña
+  if (o.net) { grabWakeLock(); document.addEventListener("visibilitychange", onVisibleAgain) }
+  if (netHost) {
+    netHost.onClosed = () => { if (!ended && !destroyed) banner = { text: "El rival se fue: sigue la IA", until: performance.now() + 3000 } }
+  }
 
   const frame = (now: number) => {
     if (destroyed) return
@@ -687,22 +740,51 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     last = now
     stats.frames++
     if (dt > 0) fpsSmooth += (1 / dt - fpsSmooth) * 0.05
+    if (viewMode !== "auto" && !paused && !autoSaver) {
+      lowFpsFrames = fpsSmooth < 42 ? lowFpsFrames + 1 : 0
+      if (lowFpsFrames > 90) autoSaver = true // ~1.5 s seguidos por debajo de 42 fps
+    }
 
     const portrait = portraitNow()
     const vw = portrait ? cssH : cssW
     const vh = portrait ? cssW : cssH
     stepsThisFrame = 0
     let alpha = 1
-    if (!paused) {
+    if (netGuest) {
+      // INVITADO: no simula. Recibe fotos del host (ver onSnapshot), reacciona a sus eventos y le devuelve
+      // el stick y los botones. `alpha` interpola entre la foto anterior y la última.
+      for (const ev of netGuest.takeEvents()) handleEvent(ev, now)
+      while (pending.length) { const a = pending.shift() as ActionEvent; if (a.kind === "button") netGuest.sendButton(a.action) }
+      if (now - lastStickAt >= 33) {
+        lastStickAt = now
+        const kb = keyboardVector(pressedKeys)
+        const useKb = kb.x !== 0 || kb.y !== 0
+        netGuest.sendStick(useKb ? kb.x : input.moveX, useKb ? kb.y : input.moveY)
+      }
+      alpha = snapAt ? Math.min(1, (now - snapAt) / SNAP_MS) : 1
+      controlledId = netGuest.latest ? netGuest.latest.ctl[1] : null
+    } else if (!paused) {
       alpha = stepper.advance(dt, (fixed) => {
         if (receiverLock && (world.puck.carrierId !== null || world.time > receiverLock.until || world.phase !== "play" || !findSkater(world, receiverLock.id))) receiverLock = null
         controlledId = (o.demo || o.spectator) ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
+        const twoHumans = !!netHost && netHost.guestJoined
+        guestCtl = twoHumans ? selectControlled(world, 1, guestCtl) : null
         if (o.training) ai.update(world, controlledId, fixed, [0]) // en entrenamiento, solo los compañeros (lado 0) se mueven solos — no hay rival de verdad
+        else if (twoHumans) { ai.update(world, controlledId, fixed, [0]); ai.update(world, guestCtl, fixed, [1]) } // 2P: la IA solo mueve a los compañeros de cada humano
         else ai.update(world, controlledId, fixed)
         if (controlledId) {
           const kb = keyboardVector(pressedKeys)
           const useKb = kb.x !== 0 || kb.y !== 0
           setInput(world, controlledId, useKb ? kb.x : input.moveX, useKb ? kb.y : input.moveY)
+        }
+        if (twoHumans && netHost) {
+          const gs = netHost.guestStick
+          if (guestCtl) setInput(world, guestCtl, gs.x, gs.y)
+          const gpad = Math.hypot(gs.x, gs.y) >= 0.25 ? Math.atan2(gs.y, gs.x) : null
+          for (const a of netHost.takeButtons()) {
+            const res = performButton(world, 1, guestCtl, a, BTN_POWER[a], gpad)
+            if (res.switchTo) guestCtl = res.switchTo
+          }
         }
         while (pending.length) applyAction(pending.shift() as ActionEvent)
         if (demoDirector && demoTutor && !demoTutor.done) demoDirector.step(world, (stage) => demoTutor.has(stage), now)
@@ -713,68 +795,21 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         if (world.phase === "play" || world.phase === "timeOn") replayBuf.push(world)
         if (world.events.length) {
           for (const ev of drainEvents(world)) {
-            countEvent(ev)
-            sfx.play(ev)
-            crowd?.onEvent(ev, world, cam.cx, cam.width)
-            demoTutor?.onEvent(ev, now)
-            if (ev.type === "foul") {
-              banner = { text: `¡FALTA! Tarjeta azul ${names[ev.side]} #${ev.id.slice(1)}`, until: now + 1900 }
-              flash = { color: "#3b82f6", startedAt: now, durationMs: 260 }
-              navigator.vibrate?.(60)
-            } else if (ev.type === "combo") {
-              banner = { text: `${names[ev.side]} — combo ${ev.kind === "attack" ? "de ataque" : "defensivo"} armado`, until: now + 1400 }
-              navigator.vibrate?.(30)
-            } else if (ev.type === "save") {
-              // Solo dibujo: la pierna de despeje del arquero se anima leyendo esto en drawScene
-              // (ver GOALIE_KICK_MS) — no hay nada nuevo que simular, ya pasó.
-              saveFX[ev.side] = { startedAt: now, ny: ev.ny }
-            } else if (ev.type === "sub") {
-              // Antes esto era solo un cartelito de texto (1.4s, fácil de perderse con la jugada
-              // en marcha) y encima no decía QUIÉN salía. El pedido es que el cambio automático
-              // por cansancio se VEA: ahora banda más larga con entra/sale, un chispazo del color
-              // del equipo en el punto exacto de la pista donde entró el fresco, y vibración corta
-              // — el mismo lenguaje visual que ya usa un gol, pero más chico.
-              banner = { text: `Cambio ${names[ev.side]}: sale #${ev.outId.slice(1)} · entra #${ev.inId.slice(1)}`, until: now + 2200 }
-              const fresh = world.skaters.find((sk) => sk.id === ev.inId)
-              if (fresh) {
-                const scr = cam.toScreen(fresh.x, fresh.y)
-                confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffffff"], 26)
-              }
-              navigator.vibrate?.(40)
-            } else if (ev.type === "penalty") {
-              banner = { text: `¡PENAL para ${names[ev.side]}!`, until: now + 2200 }
-              flash = { color: "#facc15", startedAt: now, durationMs: 260 }
-              navigator.vibrate?.([40, 60, 40])
-            } else if (ev.type === "goal") {
-              navigator.vibrate?.(120)
-              flash = { color: colors[ev.side], startedAt: now, durationMs: 220 }
-              lastGoalCombo = !!ev.combo
-              const conceded = GOALS[ev.side === 0 ? 1 : 0]
-              const scr = cam.toScreen(conceded.lineX, conceded.cy)
-              confetti.spawn(scr.x, scr.y, [colors[ev.side], "#ffd23f", "#ffffff"], 110)
-              goalReplay = { frames: replayBuf.freeze(), scorerSide: ev.side, startedAt: now, speed: 0.55 }
-              if (shootout && ev.side === shootout.turn) {
-                shootoutAwaitingKickoff = true
-                resolveShootoutAttempt(true)
-              }
-              if (o.training?.penalties && ev.side === 0) penaltyTrainingAwaitingKickoff = true
-            } else if (ev.type === "end" && !ended) {
-              ended = true
-              releaseFingers()
-              result.score = [world.score[0], world.score[1]]
-              result.fouls = [world.fouls[0], world.fouls[1]]
-              // Festejo de partido ganado: un estallido de confeti más grande, desde el medio de la
-              // pantalla — aparte del que ya tira cada gol individual.
-              if (!o.demo && !o.spectator && !o.training && world.score[0] > world.score[1]) {
-                confetti.spawn(cssW / 2, cssH * 0.35, [colors[0], "#ffd23f", "#ffffff", "#4ade80"], 220)
-              }
-              o.onEnd?.({ ...result })
-            }
+            handleEvent(ev, now)
+            if (netHost) outEvents.push(ev)
           }
         }
       })
     }
     stats.controlledId = controlledId
+    if (netHost && netHost.guestJoined) {
+      // Snapshot primero (así el marcador del invitado ya es el nuevo cuando le llega el evento del gol/fin).
+      if (outEvents.length || now - lastSnapAt >= SNAP_MS) {
+        lastSnapAt = now
+        netHost.sendSnapshot(makeSnapshot(world, netHost.nextSeq(), [controlledId, guestCtl]))
+      }
+      if (outEvents.length) netHost.sendEvents(outEvents.splice(0))
+    } else outEvents.length = 0
 
     // Si nadie convirtió antes del plazo, es fallo: se corta directo al siguiente (sin la pausa de
     // festejo, que es solo para goles). Si SÍ convirtió, se espera a que la pausa normal termine y
@@ -826,7 +861,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       goalReplay = null
     }
     const opts = {
-      controlledId, humanSide: ((o.demo || o.spectator) ? null : 0) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver,
+      controlledId, humanSide: ((o.demo || o.spectator) ? null : mySide) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver: graphicsSaver || autoSaver,
       superTrail: superTrail.live(now), goalieSave: saveFX, venue: o.venue,
     }
 
@@ -837,7 +872,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     drawScene(ctx, sceneWorld, cam, opts)
     confetti.update(dt)
     confetti.draw(ctx, vw, vh)
-    drawTouchOverlay(ctx, world, cam, input, controlledId)
+    drawTouchOverlay(ctx, world, cam, input, controlledId, padAngle(), mySide)
     ctx.restore()
 
     // Marcador, banners y texto: SIEMPRE derechos, nunca rotados — un cartel de puntaje girado 90°
@@ -864,14 +899,46 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
       const k = 1 - Math.exp(-6 * dt)
       scorePanelShift += (target - scorePanelShift) * k
 
+      if (superFlashBtn && ctxBtns) {
+        const carrier = world.puck.carrierId ? world.skaters.find((sk) => sk.id === world.puck.carrierId) : undefined
+        const defending = !(carrier && carrier.side === mySide)
+        const setLbl = (b: HTMLElement, t: string) => { const l = b.querySelector("span"); if (l) fitLabel(l as HTMLElement, tr(t)) }
+        if (defending !== defenseLabels) {
+          defenseLabels = defending
+          superReady = false // se re-evalúa la estrella en el próximo cuadro
+          if (defending) {
+            setLbl(ctxBtns.pase, "QUITAR")
+            setLbl(ctxBtns.fuerte, "QUITAR\nFUERTE")
+            setLbl(ctxBtns.tiro, "◀\nCAMBIO")
+            setLbl(ctxBtns.top, "CAMBIO\n▶")
+            superFlashBtn.style.borderColor = ""
+            superFlashBtn.style.animation = "none"
+          } else {
+            setLbl(ctxBtns.pase, "PASE")
+            setLbl(ctxBtns.fuerte, "PASE\nFUERTE")
+            setLbl(ctxBtns.tiro, "TIRO")
+            setLbl(ctxBtns.top, "TIRO\nFUERTE")
+          }
+        }
+        if (!defending && controlledId) {
+          const cs = world.skaters.find((sk) => sk.id === controlledId)
+          const star = !!cs && cs.stamina >= SUPER_SHOT_COST
+          if (star !== superReady) {
+            superReady = star
+            superFlashBtn.style.borderColor = star ? "rgba(253,224,71,.95)" : ""
+            superFlashBtn.style.animation = star ? "fp-superstar 900ms ease-in-out infinite" : "none"
+            setLbl(superFlashBtn, star ? "★ SÚPER\nTIRO" : "TIRO\nFUERTE")
+          }
+        }
+      }
       if (actionButtons) {
         // Zona real (pantalla, sin rotar) que ocupa el rombo de botones: ver el
         // `right:14px;bottom:14px` con el que se arma más abajo (`ACTION_BOX` = lado del cuadrado).
-        const btnL = cssW - 14 - ACTION_BOX
+        const btnL = leftHandedNow() ? 14 : cssW - 14 - ACTION_BOX
         const btnT = cssH - 14 - ACTION_BOX
         const underButtons = (vx: number, vy: number) => {
           const p = virtualToScreen(vx, vy)
-          return p.x >= btnL - 20 && p.y >= btnT - 20
+          return p.x >= btnL - 20 && p.x <= btnL + ACTION_BOX + 20 && p.y >= btnT - 20
         }
         const bTarget = underButtons(puckScreen.x, puckScreen.y) || (ctrlScreen && underButtons(ctrlScreen.x, ctrlScreen.y)) ? 1 : 0
         actionButtonsShift += (bTarget - actionButtonsShift) * k
@@ -882,7 +949,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     drawHud(ctx, world, {
       ...opts, alpha, comboGoal: lastGoalCombo, showHint: !firstActionDone && !o.demo && !o.spectator, demo: o.demo,
       demoCaption: demoTutor?.caption ?? null, demoReady: demoTutor ? demoTutor.done : true,
-      controlScheme: o.controlScheme ?? "honda", scorePanelShift,
+      scorePanelShift,
     }, cssW, cssH)
     if (banner && now < banner.until) drawBanner(ctx, banner.text, cssW, cssH)
     if (o.debug) drawDebug(ctx, fpsSmooth, stepsThisFrame, world)
@@ -913,13 +980,21 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     cycleView() {
       viewMode = viewMode === "auto" ? "full" : viewMode === "full" ? "three-quarter" : "auto"
       if (viewMode === "auto") cam.reset()
+      autoSaver = false; lowFpsFrames = 0; fpsSmooth = 60
     },
     cyclePlayer,
-    setLeftHanded(v: boolean) { input.leftHanded = v },
+    setLeftHanded(v: boolean) {
+      input.leftHanded = v
+      if (actionButtons) { actionButtons.style.left = v ? "14px" : ""; actionButtons.style.right = v ? "" : "14px" }
+    },
     setGraphicsSaver(v: boolean) { graphicsSaver = v },
     get viewMode() { return viewMode },
     destroy() {
       destroyed = true
+      netHost?.close()
+      netGuest?.close()
+      document.removeEventListener("visibilitychange", onVisibleAgain)
+      wakeLock?.release().catch(() => {})
       cancelAnimationFrame(raf)
       window.removeEventListener("resize", resize)
       window.visualViewport?.removeEventListener("resize", resize)
@@ -941,7 +1016,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
 }
 
 // ---------- superposiciones de pantalla ----------
-function drawTouchOverlay(ctx: CanvasRenderingContext2D, w: World, cam: Camera, input: TouchInput, controlledId: string | null) {
+function drawTouchOverlay(ctx: CanvasRenderingContext2D, w: World, cam: Camera, input: TouchInput, controlledId: string | null, aimAngle: number | null, mySide: Side) {
   ctx.save()
   const st = input.stick
   if (st) {
@@ -953,11 +1028,10 @@ function drawTouchOverlay(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     const ky = st.oy + Math.max(-1, Math.min(1, (st.cy - st.oy) / st.radius)) * st.radius
     ctx.fillStyle = "rgba(255,255,255,0.55)"
     ctx.beginPath(); ctx.arc(kx, ky, st.radius * 0.36, 0, Math.PI * 2); ctx.fill()
-  } else if (input.buttonsMode) {
-    // Esquema "botones": sin dedo abajo, el joystick "flotante" no tiene nada que dibujar — la
-    // pantalla se veía sin ningún pad hasta tocarla. Este círculo fantasma, siempre visible, marca
-    // dónde vive el pad de movimiento (como el pad fijo de un control de consola) aunque no lo
-    // estés tocando; apenas apoyás el dedo, el de arriba (`st`) toma la posta y se ve normal.
+  } else {
+    // Sin dedo abajo, el joystick "flotante" no tiene nada que dibujar — la pantalla se veía sin
+    // ningún pad hasta tocarla. Este círculo fantasma, siempre visible, marca dónde vive el pad de
+    // movimiento aunque no lo estés tocando; apenas apoyás el dedo, el de arriba (`st`) toma la posta.
     const r = input.radius
     const ax = input.leftHanded ? cam.vw - r * 1.6 : r * 1.6
     const ay = cam.vh - r * 1.8
@@ -968,44 +1042,21 @@ function drawTouchOverlay(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     ctx.fillStyle = "rgba(255,255,255,0.22)"
     ctx.beginPath(); ctx.arc(ax, ay, r * 0.36, 0, Math.PI * 2); ctx.fill()
   }
-  const aim = input.aim
+  // El pad ES la dirección del tiro: con la pelota y el pad apretado, una guía punteada sale del
+  // portador hacia donde va a ir (verde = compañero, amarillo = arco, blanco = espacio).
   const carrier = w.puck.carrierId ? findSkater(w, w.puck.carrierId) : undefined
-  if (aim && carrier && carrier.side === 0 && controlledId === carrier.id) {
-    const dx = aim.sx - aim.cx // al revés que el estirón: la honda tira para el lado contrario
-    const dy = aim.sy - aim.cy
-    if (Math.hypot(dx, dy) > 10) {
-      // Las dos líneas (banda y tiro) parten del MISMO origen: la posición actual del jugador en
-      // pantalla — no de dónde tocaste al principio. Si el jugador se mueve (o la cámara lo sigue)
-      // mientras estirás, dibujar la banda desde el punto de toque fijo hacía que las dos líneas se
-      // vieran desfasadas entre sí (bug real, encontrado con una captura). El LARGO y la DIRECCIÓN
-      // del estirón siguen siendo los mismos (vienen del dedo), solo cambia desde dónde se dibujan.
-      const from = cam.toScreen(carrier.x, carrier.y)
-      // la "banda" de la honda: mismo largo/dirección que estiraste, ahora anclada al jugador — para
-      // que se entienda el gesto de un vistazo (Angry Birds), aparte de la línea de tiro de más abajo
-      ctx.strokeStyle = "rgba(255,255,255,0.4)"
-      ctx.lineWidth = 3
-      ctx.setLineDash([5, 5])
-      ctx.beginPath()
-      ctx.moveTo(from.x, from.y)
-      ctx.lineTo(from.x - dx, from.y - dy)
-      ctx.stroke()
-      const r = assistAim(w, carrier.id, Math.atan2(dy, dx), 14)
-      const len = 9 * cam.ppm
-      // Supertiro: si el estirón ya alcanza (misma cuenta que hace input.ts para la potencia), la
-      // línea de tiro se pone naranja — así se ve DURANTE el estirón que ya se llegó, no solo se
-      // sabe después de soltar.
-      const hgt = Math.max(1, cam.vh)
-      const pullFrac = (Math.hypot(dx, dy) - FLICK_MIN_DIST * hgt) / ((FLICK_MAX_DIST - FLICK_MIN_DIST) * hgt)
-      const isSuper = pullFrac >= SUPER_PULL_THRESHOLD
-      ctx.strokeStyle = isSuper ? "#f97316" : r.target === "teammate" ? "#4ade80" : r.target === "goal" ? "#fde047" : "rgba(255,255,255,0.85)"
-      ctx.lineWidth = isSuper ? 6 : 4
-      ctx.lineCap = "round"
-      ctx.setLineDash([2, 10])
-      ctx.beginPath()
-      ctx.moveTo(from.x, from.y)
-      ctx.lineTo(from.x + Math.cos(r.angle) * len, from.y + Math.sin(r.angle) * len)
-      ctx.stroke()
-    }
+  if (aimAngle !== null && carrier && carrier.side === mySide && controlledId === carrier.id) {
+    const from = cam.toScreen(carrier.x, carrier.y)
+    const r = assistAim(w, carrier.id, aimAngle, 14)
+    const len = 9 * cam.ppm
+    ctx.strokeStyle = r.target === "teammate" ? "#4ade80" : r.target === "goal" ? "#fde047" : "rgba(255,255,255,0.85)"
+    ctx.lineWidth = 4
+    ctx.lineCap = "round"
+    ctx.setLineDash([2, 10])
+    ctx.beginPath()
+    ctx.moveTo(from.x, from.y)
+    ctx.lineTo(from.x + Math.cos(r.angle) * len, from.y + Math.sin(r.angle) * len)
+    ctx.stroke()
   }
   ctx.restore()
 }
@@ -1014,8 +1065,12 @@ function drawBanner(ctx: CanvasRenderingContext2D, text: string, W: number, H: n
   ctx.save()
   ctx.textAlign = "center"
   ctx.textBaseline = "middle"
-  const fs = Math.max(14, Math.min(26, H * 0.055))
+  let fs = Math.max(14, Math.min(26, H * 0.055))
+  text = tr(text)
   ctx.font = `700 ${fs}px ${FONT}`
+  // En un celular vertical el texto (nombres largos, portugués) no entra: se achica la letra en vez de cortarlo.
+  const natural = ctx.measureText(text).width + fs * 1.6
+  if (natural > W - 12) { fs = Math.max(9, fs * ((W - 12) / natural)); ctx.font = `700 ${fs}px ${FONT}` }
   const tw = ctx.measureText(text).width + fs * 1.6
   const bx = W / 2 - tw / 2
   const by = H * 0.22

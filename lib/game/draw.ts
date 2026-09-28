@@ -1,3 +1,5 @@
+import { qrMatrix } from "./qr"
+import { tr } from "./i18n"
 import { CREASE_RADIUS, GOAL, GOALS, MATCH, RINK, SKATER, bestPassTarget } from "../engine"
 import type { Camera, Side, Skater, Surface, World } from "../engine"
 import { drawGlyphs } from "./glyphs"
@@ -28,10 +30,6 @@ export interface DrawOptions {
   comboGoal?: boolean
   /** true hasta que el equipo humano hace su primera acción (pase o tiro): hint chico abajo. */
   showHint?: boolean
-  /** Esquema de control activo — solo para que el hint de abajo (`drawActionHint`) diga lo que
-   *  hay que hacer de verdad. "honda" (estirar y soltar) es el default; ya no asumas que es
-   *  siempre un deslizamiento a la derecha, eso era del esquema viejo. */
-  controlScheme?: "honda" | "botones"
   /** true en modo demo (IA vs IA): muestra el cartel "TOCÁ PARA JUGAR" pulsando. */
   demo?: boolean
   /** Solo demo: sello de una línea (como el GOLAZO de la placa) para la jugada que se acaba de
@@ -126,6 +124,17 @@ function matHash(a: number, b: number): number {
   return ((h >>> 0) % 1000) / 1000
 }
 
+/** Colores de baldosa ya armados: `shade()` arma un string nuevo por baldosa y en vista completa son ~800
+ *  por cuadro (60 veces por segundo) — basura para el GC y un parseo de color por cada `fillStyle`. El
+ *  color de cada baldosa es fijo, así que se calcula una sola vez. */
+const tileColorCache = new Map<string, string>()
+function tileColor(base: string, i: number, j: number, span: number): string {
+  const key = `${base}|${i}|${j}|${span}`
+  let c = tileColorCache.get(key)
+  if (c === undefined) { c = shade(base, (matHash(i, j) - 0.5) * span); tileColorCache.set(key, c) }
+  return c
+}
+
 function drawFloor(ctx: CanvasRenderingContext2D, surface: Surface, cam: Camera) {
   const f = FLOOR[surface]
   roundedRinkPath(ctx)
@@ -142,7 +151,7 @@ function drawFloor(ctx: CanvasRenderingContext2D, surface: Surface, cam: Camera)
     const cell = 0.8
     for (let y = Math.floor(y0 / cell) * cell; y < y1; y += cell) {
       const i = Math.round(y / cell)
-      ctx.fillStyle = shade(f.base, (matHash(i, 0) - 0.5) * 18)
+      ctx.fillStyle = tileColor(f.base, i, 0, 18)
       ctx.fillRect(x0, y, x1 - x0, cell)
     }
   } else if (surface === "cemento") {
@@ -150,7 +159,7 @@ function drawFloor(ctx: CanvasRenderingContext2D, surface: Surface, cam: Camera)
     const cell = 5
     for (let cx = Math.floor(x0 / cell); cx * cell < x1; cx++) {
       for (let cy = Math.floor(y0 / cell); cy * cell < y1; cy++) {
-        ctx.fillStyle = shade(f.base, (matHash(cx, cy) - 0.5) * 24)
+        ctx.fillStyle = tileColor(f.base, cx, cy, 24)
         ctx.fillRect(cx * cell, cy * cell, cell, cell)
       }
     }
@@ -159,7 +168,7 @@ function drawFloor(ctx: CanvasRenderingContext2D, surface: Surface, cam: Camera)
     const cell = 1
     for (let cx = Math.floor(x0 / cell); cx * cell < x1; cx++) {
       for (let cy = Math.floor(y0 / cell); cy * cell < y1; cy++) {
-        ctx.fillStyle = shade(f.base, (matHash(cx, cy) - 0.5) * 10)
+        ctx.fillStyle = tileColor(f.base, cx, cy, 10)
         ctx.fillRect(cx * cell, cy * cell, cell, cell)
       }
     }
@@ -799,10 +808,44 @@ function crowdLayout(cam: Camera, spacing: number, saver: boolean, crests: [stri
   return layout
 }
 
+/** Densidad de público según el zoom: lejos (vista completa) cada hincha mide 3-5 px, así que se ve igual
+ *  con menos puntos. Sube la separación de a saltos (no continuo) para que el layout cacheado no se
+ *  reconstruya en cada cuadro del zoom de la cámara automática. */
+export function crowdSpacing(ppm: number, saver: boolean): number {
+  const base = saver ? FAN_SPACING_SAVER : FAN_SPACING
+  if (ppm >= 16) return base
+  if (ppm >= 11) return base * 1.3
+  return base * 1.6
+}
+
+const crestSpriteCache = new Map<string, HTMLCanvasElement | null>()
+function crestSprite(crest: string, fontFamily: string): HTMLCanvasElement | null {
+  const key = `${crest}|${fontFamily}`
+  const hit = crestSpriteCache.get(key)
+  if (hit !== undefined) return hit
+  let out: HTMLCanvasElement | null = null
+  if (typeof document !== "undefined") {
+    try {
+      const c = document.createElement("canvas")
+      c.width = 32; c.height = 32
+      const g = c.getContext("2d")
+      if (g) {
+        g.font = `26px ${fontFamily}, system-ui`
+        g.textAlign = "center"
+        g.textBaseline = "middle"
+        g.fillText(crest, 16, 17)
+        out = c
+      }
+    } catch { out = null }
+  }
+  crestSpriteCache.set(key, out)
+  return out
+}
+
 /** `palette`/`excludeBand` son solo para el Cantoni (ver `drawCantoniArena`): la tribuna genérica
  *  siempre llama esto con `FAN_PALETTE` y sin excluir ninguna banda. */
 function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean, palette: string[] = FAN_PALETTE, excludeBand: number | null = null) {
-  const spacing = saver ? FAN_SPACING_SAVER : FAN_SPACING
+  const spacing = crowdSpacing(cam.ppm, saver)
   const { buckets, flags } = crowdLayout(cam, spacing, saver, crests, palette, excludeBand)
   const bob = 0.05 + 0.18 * Math.max(0, Math.min(1, excitement))
   const bounce = (d: CrowdDot) => d.baseY - Math.abs(Math.sin(now * 3.1 + d.phase)) * bob * d.weight
@@ -816,10 +859,21 @@ function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement:
   }
   if (flags.length) {
     ctx.globalAlpha = 0.72
-    ctx.font = `0.5px ${fontFamily}, system-ui`
-    ctx.textAlign = "center"
-    ctx.textBaseline = "middle"
-    for (const f of flags) ctx.fillText(f.crest, f.x, bounce(f))
+    // Sprite prearmado por escudo: `fillText` de un emoji cuesta MUCHO más que un `drawImage` de 24x24
+    // (en vista completa eran ~100 por cuadro). Si no hay DOM/canvas (tests), cae al texto de siempre.
+    const sprite = crestSprite(flags[0].crest, fontFamily)
+    if (sprite) {
+      const sz = 0.55
+      for (const f of flags) {
+        const spr = crestSprite(f.crest, fontFamily)
+        if (spr) ctx.drawImage(spr, f.x - sz / 2, bounce(f) - sz / 2, sz, sz)
+      }
+    } else {
+      ctx.font = `0.5px ${fontFamily}, system-ui`
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
+      for (const f of flags) ctx.fillText(f.crest, f.x, bounce(f))
+    }
   }
   ctx.restore()
 }
@@ -902,23 +956,46 @@ function drawChampionshipBanners(ctx: CanvasRenderingContext2D, fontFamily: stri
   ctx.restore()
 }
 
-function drawEntranceScreen(ctx: CanvasRenderingContext2D, now: number, fontFamily: string) {
-  // "La imponente pantalla en su ingreso" — un rectángulo con resplandor en la esquina de la
-  // cabecera plegable, con un parpadeo lento (no tan rápido como para marear). Puramente cosmético.
+let ardisportQrCache: boolean[][] | null = null
+
+/** Pantalla de Ardisport en la esquina de la cabecera plegable. De lejos: el nombre parpadeando. De cerca
+ *  (cámara muy acercada, o pantalla grande): un QR de ardisport.cl al lado, escaneable de verdad. */
+function drawEntranceScreen(ctx: CanvasRenderingContext2D, now: number, fontFamily: string, ppm = 0) {
   const cx = -STANDS_DEPTH * 0.5, cy = -STANDS_DEPTH * 0.5
-  const w = 1.7, h = 1.0
+  const showQr = ppm >= 34
+  const w = showQr ? 3.1 : 1.7, h = showQr ? 1.5 : 1.0
   const flicker = 0.75 + 0.25 * Math.sin(now * 1.3)
   ctx.save()
   ctx.shadowColor = "#38bdf8"
   ctx.shadowBlur = 6
   ctx.fillStyle = "#0f172a"
   ctx.fillRect(cx - w / 2, cy - h / 2, w, h)
+  ctx.shadowBlur = 0
   ctx.globalAlpha = flicker
   ctx.fillStyle = "#38bdf8"
   ctx.font = `700 0.34px ${fontFamily}, system-ui`
   ctx.textAlign = "center"
   ctx.textBaseline = "middle"
-  ctx.fillText("ARDISPORT", cx, cy)
+  if (showQr) {
+    ctx.fillText("ARDISPORT", cx - w * 0.22, cy - 0.15)
+    ctx.font = `600 0.2px ${fontFamily}, system-ui`
+    ctx.fillText("ardisport.cl", cx - w * 0.22, cy + 0.2)
+    ctx.globalAlpha = 1
+    if (!ardisportQrCache) { try { ardisportQrCache = qrMatrix("https://ardisport.cl", "M") } catch { ardisportQrCache = [] } }
+    const m = ardisportQrCache
+    if (m.length) {
+      const quiet = 2, mod = (h - 0.2) / (m.length + quiet * 2)
+      const qx = cx + w / 2 - 0.1 - (m.length + quiet * 2) * mod, qy = cy - h / 2 + 0.1
+      ctx.fillStyle = "#ffffff"
+      ctx.fillRect(qx, qy, (m.length + quiet * 2) * mod, (m.length + quiet * 2) * mod)
+      ctx.fillStyle = "#000000"
+      ctx.beginPath()
+      m.forEach((row, y) => row.forEach((dark, x) => { if (dark) ctx.rect(qx + (x + quiet) * mod, qy + (y + quiet) * mod, mod, mod) }))
+      ctx.fill()
+    }
+  } else {
+    ctx.fillText("ARDISPORT", cx, cy)
+  }
   ctx.restore()
 }
 
@@ -927,7 +1004,7 @@ function drawCantoniArena(ctx: CanvasRenderingContext2D, cam: Camera, excitement
   drawFoldableEnd(ctx)
   drawRoofTruss(ctx, cam)
   if (!saver) drawChampionshipBanners(ctx, fontFamily)
-  drawEntranceScreen(ctx, now, fontFamily)
+  drawEntranceScreen(ctx, now, fontFamily, cam.ppm)
 }
 
 
@@ -1518,16 +1595,21 @@ function drawActionHint(ctx: CanvasRenderingContext2D, o: DrawOptions, vw: numbe
   ctx.textAlign = "center"
   ctx.textBaseline = "middle"
   const y = vh - fs * 1.6
-  // El default es honda (estirás atrás y soltás, como una gomera); "botones" es el otro esquema.
-  // Antes esto decía siempre "deslizá a la derecha", que es de un esquema que ya no existe.
-  const isButtons = o.controlScheme === "botones"
-  let text = isButtons
-    ? "Tocá a un compañero = pase · PASE verde / TIRO amarillo = tirar"
-    : "Tocá a un compañero = pase · Estirá y soltá = pase o tiro"
-  if (ctx.measureText(text).width + fs * 1.4 > vw - 16) {
-    text = isButtons ? "Tocá compañero = pase · Botones = tiro" : "Tocá compañero = pase · Estirá y soltá"
-  }
-  const tw = ctx.measureText(text).width + fs * 1.4
+  // Un solo esquema (stick + 4 botones): el stick es la dirección, los botones cambian según tengas la
+  // pelota (PASE / TIRO) o no (QUITAR / cambio de jugador). Ya no hay gesto de estirar y soltar.
+  // De más completo a más corto; el primero que entra en el ancho real gana. Si ninguno entra (portugués en
+  // un celular angosto), se achica la letra en vez de dejarlo cortado por los costados.
+  const candidates = [
+    tr("Stick = dirección · PASE y TIRO con la pelota · QUITAR sin ella"),
+    tr("Stick = dirección · Botones: pase, tiro, quitar"),
+    tr("Stick + botones"),
+  ]
+  const maxW = vw - 16
+  let text = candidates.find((c) => ctx.measureText(c).width + fs * 1.4 <= maxW) ?? candidates[candidates.length - 1]
+  let drawFs = fs
+  const need = ctx.measureText(text).width + fs * 1.4
+  if (need > maxW) { drawFs = Math.max(8, fs * (maxW / need)); ctx.font = `600 ${drawFs}px ${o.fontFamily}` }
+  const tw = ctx.measureText(text).width + drawFs * 1.4
   ctx.fillStyle = "rgba(0,0,0,0.55)"
   ctx.beginPath()
   const bx = vw / 2 - tw / 2
@@ -1542,6 +1624,7 @@ function drawActionHint(ctx: CanvasRenderingContext2D, o: DrawOptions, vw: numbe
 /** Sello de una línea (como el GOL/GOLAZO de la placa) para la jugada que el demo acaba de
  *  reconocer en vivo — nace grande y se achica, así se nota igual que un festejo. */
 function drawDemoStamp(ctx: CanvasRenderingContext2D, text: string, o: DrawOptions, vw: number, vh: number) {
+  text = tr(text)
   const fs = Math.max(13, Math.min(20, vh * 0.042))
   ctx.save()
   ctx.font = `bold ${fs}px ${o.fontFamily}`
@@ -1567,7 +1650,7 @@ function drawDemoStamp(ctx: CanvasRenderingContext2D, text: string, o: DrawOptio
 function drawDemoCaption(ctx: CanvasRenderingContext2D, o: DrawOptions, vw: number, vh: number) {
   const fs = Math.max(12, Math.min(18, vh * 0.038))
   const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 260)
-  const text = "TOCÁ PARA JUGAR"
+  const text = tr("TOCÁ PARA JUGAR")
   ctx.save()
   ctx.font = `bold ${fs}px ${o.fontFamily}`
   ctx.textAlign = "center"

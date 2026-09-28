@@ -1,8 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { TouchInput, digitFromCode, isShootKey, keyboardVector } from "../../lib/game/input"
-import { powerFromFlick } from "../../lib/engine/aim"
-import { STAMINA } from "../../lib/engine/constants"
 
 const W = 800
 const H = 360
@@ -32,115 +30,6 @@ test("joystick: zona muerta y la base sigue al dedo si te pasas del radio", () =
   // volver hacia el origen original ya frena (la base está cerca del dedo)
   i.move(1, i.stick!.ox - i.radius, 100, 0.03)
   assert.ok(i.moveX < 0)
-})
-
-test("dos dedos a la vez: uno mueve, el otro dispara, sin interferirse", () => {
-  const i = mk()
-  i.down(1, 120, 250, 0)
-  i.move(1, 120 + i.radius, 250, 0.01)
-  i.down(2, 600, 200, 0.02)
-  // el dedo de acción se mueve; el de movimiento conserva su vector
-  i.move(2, 650, 150, 0.04)
-  assert.ok(i.moveX > 0.99)
-  const ev = i.up(2, 700, 100, 0.06)
-  assert.equal(ev?.kind, "flick")
-  assert.ok(i.moveX > 0.99) // el joystick sigue activo
-})
-
-test("toque corto sin deslizar = tap", () => {
-  const i = mk()
-  i.down(5, 600, 200, 1)
-  const ev = i.up(5, 603, 201, 1.12)
-  assert.deepEqual(ev, { kind: "tap", x: 603, y: 201 }) // el toque ahora lleva su posición
-})
-
-test("dedo apoyado mucho rato sin moverse no dispara nada", () => {
-  const i = mk()
-  i.down(5, 600, 200, 1)
-  assert.equal(i.up(5, 601, 200, 2.5), null)
-})
-
-test("estilo honda: el tiro sale para el lado CONTRARIO a como estiraste (arriba/abajo/derecha)", () => {
-  const cases: Array<[number, number, number]> = [
-    [0, -1, Math.PI / 2], // estiras para arriba -> tira para abajo
-    [0, 1, -Math.PI / 2], // estiras para abajo -> tira para arriba
-    [1, 0, Math.PI], // estiras para la derecha -> tira para la izquierda
-    [-1, 0, 0], // estiras para la izquierda -> tira para la derecha
-  ]
-  for (const [dx, dy, want] of cases) {
-    const i = mk()
-    i.down(3, 600, 200, 0)
-    for (let k = 1; k <= 5; k++) i.move(3, 600 + dx * k * 20, 200 + dy * k * 20, k * 0.01)
-    const ev = i.up(3, 600 + dx * 120, 200 + dy * 120, 0.06)
-    assert.equal(ev?.kind, "flick")
-    if (ev?.kind === "flick") {
-      const d = Math.atan2(Math.sin(ev.angle - want), Math.cos(ev.angle - want))
-      assert.ok(Math.abs(d) < 0.05, `estirón (${dx},${dy}) debía tirar a ${want}, dio ${ev.angle}`)
-    }
-  }
-})
-
-test("potencia: cuanto más estiraste, más potencia — no importa la velocidad ni el camino", () => {
-  const far = mk()
-  far.down(1, 600, 250, 0)
-  for (let k = 1; k <= 6; k++) far.move(1, 600, 250 - k * 30, k * 0.5) // recorrido largo, bien lento
-  const f = far.up(1, 600, 250 - 6 * 30, 3)
-
-  const near = mk()
-  near.down(1, 600, 250, 0)
-  for (let k = 1; k <= 12; k++) near.move(1, 600, 250 - k * 5, k * 0.01) // recorrido corto, bien rápido
-  const n = near.up(1, 600, 250 - 60, 0.12)
-
-  assert.equal(f?.kind, "flick")
-  assert.equal(n?.kind, "flick")
-  if (f?.kind === "flick" && n?.kind === "flick") {
-    assert.ok(f.vhPerSec > n.vhPerSec, `lejos (lento) ${f.vhPerSec} vs cerca (rápido) ${n.vhPerSec} — solo importa la distancia`)
-  }
-})
-
-test("potencia: un estirón corto (justo pasado el umbral de toque) da la potencia mínima, no cero", () => {
-  const i = mk()
-  i.down(1, 600, 250, 0)
-  i.move(1, 630, 250, 0.1) // recorrido chico, apenas pasa el umbral de toque (23.4px con H=360)
-  const ev = i.up(1, 630, 250, 0.2)
-  assert.equal(ev?.kind, "flick")
-  if (ev?.kind === "flick") {
-    assert.ok(ev.vhPerSec >= 1.2 && ev.vhPerSec < 2, `esperaba potencia mínima, dio ${ev.vhPerSec}`)
-    assert.ok(Math.abs(ev.angle - Math.PI) < 0.05, "estiró a la derecha, debe tirar a la izquierda")
-  }
-})
-
-test("con el joystick ocupado, un segundo dedo en la misma mitad toma el rol de acción", () => {
-  const i = mk()
-  i.down(1, 150, 200, 0) // joystick
-  i.down(2, 100, 100, 0.01) // también a la izquierda: pasa a ser dedo de acción
-  i.move(2, 100, 60, 0.03)
-  // un tercer dedo con los dos roles ocupados se ignora
-  i.down(3, 300, 300, 0.035)
-  assert.equal(i.up(3, 300, 300, 0.04), null)
-  const ev = i.up(2, 100, 20, 0.05)
-  assert.equal(ev?.kind, "flick")
-})
-
-test("zurdo: los roles se invierten", () => {
-  const i = mk({ leftHanded: true })
-  i.down(1, 150, 200, 0) // izquierda = acción
-  i.down(2, 650, 200, 0)
-  i.move(2, 650 + i.radius, 200, 0.02)
-  assert.ok(i.moveX > 0.99)
-  assert.equal(i.up(1, 152, 201, 0.1)?.kind, "tap")
-})
-
-test("cancelar limpia el estado y la velocidad", () => {
-  const i = mk()
-  i.down(1, 150, 200, 0)
-  i.move(1, 250, 200, 0.02)
-  i.cancel(1)
-  assert.equal(i.moveX, 0)
-  assert.equal(i.stick, null)
-  i.down(2, 600, 200, 0)
-  i.cancel(2)
-  assert.equal(i.aim, null)
 })
 
 test("teclado: WASD y flechas dan el mismo vector, diagonal normalizada", () => {
@@ -210,48 +99,50 @@ test("pase de un dedo: apoyar el dedo de movimiento mucho rato y soltar no es un
   assert.equal(i.up(1, 151, 200, 1.5), null)
 })
 
-test("pase de un dedo: mientras el dedo de movimiento está apoyado, el joystick sigue funcionando y el otro dedo pasa igual", () => {
+
+test("un solo esquema: cualquier toque, de cualquier lado, es el stick — no hay zona de acción", () => {
+  for (const x of [100, 700]) {
+    const i = mk()
+    i.down(1, x, 300, 0)
+    i.move(1, x, 250, 0.05)
+    assert.ok(i.moveY < 0, `el toque en x=${x} debe mover el stick`)
+  }
+})
+
+test("un segundo dedo en pantalla no hace nada (los botones son DOM aparte) y no interrumpe el stick", () => {
   const i = mk()
   i.down(1, 150, 200, 0)
   i.move(1, 150 + i.radius, 200, 0.02)
-  assert.ok(i.moveX > 0.9)
   i.down(2, 600, 200, 0.1)
-  const ev = i.up(2, 602, 200, 0.2)
-  assert.deepEqual(ev, { kind: "tap", x: 602, y: 200 })
+  assert.equal(i.up(2, 602, 200, 0.2), null, "el segundo dedo no genera pase ni tiro")
   assert.ok(i.moveX > 0.9, "el joystick no se interrumpe")
 })
 
-test("esquema botones: cualquier toque es el stick (no hay zona de acción), y un segundo dedo no hace nada", () => {
-  const i = mk({ buttonsMode: true })
-  i.down(1, 700, 300, 0) // del lado "derecho": en el esquema normal sería acción, acá es stick igual
-  i.move(1, 700, 250, 0.05)
-  assert.ok(i.moveY < 0, "el toque del lado derecho debe mover el stick, no apuntar")
-  assert.equal(i.aim, null, "no hay zona de acción en este esquema")
-  i.down(2, 100, 100, 0.06) // segundo dedo: no hace nada, ya hay stick
-  assert.equal(i.up(2, 100, 100, 0.07), null)
+test("toque corto del dedo del stick sin arrastrar = tap estricto; apoyado mucho rato = nada", () => {
+  const a = mk()
+  a.down(5, 600, 200, 1)
+  assert.deepEqual(a.up(5, 603, 201, 1.12), { kind: "tap", x: 603, y: 201, strict: true })
+  const b = mk()
+  b.down(5, 600, 200, 1)
+  assert.equal(b.up(5, 601, 200, 2.5), null)
 })
 
-test("un estirón bien a fondo llega a velocidad de supertiro de verdad (integrado con powerFromFlick)", () => {
+test("cancelar limpia el estado y la velocidad; un dedo ajeno no cancela el stick", () => {
+  const i = mk()
+  i.down(1, 150, 200, 0)
+  i.move(1, 250, 200, 0.02)
+  i.cancel(99)
+  assert.ok(i.stick, "cancelar otro dedo no toca el stick")
+  i.cancel(1)
+  assert.equal(i.moveX, 0)
+  assert.equal(i.stick, null)
+  i.down(2, 600, 200, 0.1) // vuelve a quedar libre para un dedo nuevo
+  assert.ok(i.stick)
+})
+
+test("ya no existe el gesto de estirar y soltar: arrastrar lejos y soltar no devuelve ningún evento", () => {
   const i = mk()
   i.down(1, 600, 250, 0)
-  // estirón bien largo: bastante más allá de FLICK_MAX_DIST (0.32 * H=360 = 115px) para asegurar el tope
   i.move(1, 600, 400, 0.1)
-  const ev = i.up(1, 600, 400, 0.15)
-  assert.equal(ev?.kind, "flick")
-  if (ev?.kind === "flick") {
-    const speed = powerFromFlick(ev.vhPerSec)
-    assert.ok(speed >= STAMINA.superShotMinSpeed, `un estirón a fondo debería llegar a supertiro: ${speed} vs ${STAMINA.superShotMinSpeed}`)
-  }
-})
-
-test("un estirón chico (recién pasado el toque) NO llega a supertiro", () => {
-  const i = mk()
-  i.down(1, 600, 250, 0)
-  i.move(1, 630, 250, 0.05) // apenas pasa el umbral de toque, lejos del máximo
-  const ev = i.up(1, 630, 250, 0.08)
-  assert.equal(ev?.kind, "flick")
-  if (ev?.kind === "flick") {
-    const speed = powerFromFlick(ev.vhPerSec)
-    assert.ok(speed < STAMINA.superShotMinSpeed, `un estirón chico no debería ser supertiro: ${speed}`)
-  }
+  assert.equal(i.up(1, 600, 400, 0.15), null)
 })

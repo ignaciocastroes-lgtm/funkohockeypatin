@@ -10,7 +10,9 @@
     "build:standalone": "node scripts/build-standalone.mjs juego.html",
     "typecheck": "tsc --noEmit",
     "audit:ui": "node scripts/audit-ui.mjs",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "e2e:2p": "node scripts/build-standalone.mjs juego.html && node scripts/e2e-2p.cjs juego.html",
+    "relay": "node relay/server.cjs"
   },
   "dependencies": {
     "@vercel/analytics": "1.6.1",

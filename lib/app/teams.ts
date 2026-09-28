@@ -20,6 +20,10 @@ export interface Team {
   /** Siempre 6 jugadores (4 en pista + 2 suplentes por cansancio); el índice 0 es el capitán. */
   roster: RosterPlayer[]
   builtin?: boolean
+  /** Solo para clubes que existen de verdad: de dónde sale el dato y si el club ya dio el OK para
+   *  aparecer en el juego. `permiso: "pendiente"` = se usa el NOMBRE (sin escudo oficial, colores y
+   *  plantilla inventados) hasta que el club lo autorice — ver docs/CLUB-CHILENO.md. */
+  real?: { ciudad: string; pais: string; fundado?: number; fuente: string; permiso: "pendiente" | "ok" }
 }
 
 /**
@@ -87,7 +91,22 @@ export const NATIONAL_TEAMS: Team[] = [
   { id: "n-us", name: "ESTADOS UNIDOS", color: "#0a3161", crest: "🇺🇸", surface: "madera", category: "mixto", builtin: true, roster: roster(["Liberty", "Estrella", "Trueno", "Yankee", "Eagle", "Rocket"]) },
 ]
 
-export const DEFAULT_TEAMS: Team[] = [...NATIONAL_TEAMS]
+/**
+ * Clubes reales (a diferencia de las selecciones, que son países). Plantillas ficticias, sin
+ * escudos oficiales: el escudo es un emoji del set y los colores son provisorios hasta que el club
+ * confirme los suyos.
+ *  - Club de Hockey de Huachipato (Talcahuano/Concepción, Chile): fundado en 1963, de los pilares del
+ *    hockey patín del sur de Chile, juega la Liga Sur (fuente: hockeyligasur.cl, sección Clubes).
+ */
+export const CLUB_TEAMS: Team[] = [
+  {
+    id: "c-cl-huachipato", name: "HUACHIPATO", color: "#1d4ed8", pantsColor: "#111827", crest: "🔥", surface: "madera", category: "mixto", builtin: true,
+    roster: roster(["Acerero", "Fragua", "Bahía", "Sur", "Hornero", "Marea"]),
+    real: { ciudad: "Huachipato (Talcahuano)", pais: "Chile", fundado: 1963, fuente: "hockeyligasur.cl — Clubes y Equipos", permiso: "pendiente" },
+  },
+]
+
+export const DEFAULT_TEAMS: Team[] = [...NATIONAL_TEAMS, ...CLUB_TEAMS]
 
 export function defaultRoster(): RosterPlayer[] {
   return roster(["Capitán", "Jugador 2", "Jugador 3", "Jugador 4", "Jugador 5", "Jugador 6"])

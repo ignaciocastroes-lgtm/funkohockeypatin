@@ -15,7 +15,7 @@ export interface DemoCaption { stage: DemoStage; text: string; until: number }
 
 /**
  * El demo (attract mode, IA vs IA) tiene que ENSEÑAR antes de vender: un toque y el usuario caía
- * al menú sin haber visto honda, combo ni súper tiro. Esta clase mira, en vivo, la misma cadena
+ * al menú sin haber visto un pase de un toque, el combo ni el súper tiro. Esta clase mira, en vivo, la misma cadena
  * de eventos que ya emite el motor (pickup/kick/combo/goal/save) y reconoce las 4 jugadas que
  * enseñan el juego, en el orden que las enseña:
  *

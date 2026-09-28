@@ -1,4 +1,4 @@
-import { CURVE, FIXED_DT, GOAL, GOALIE, MATCH, PUCK, PUCK_KINDS, RINK, RULES, SKATER, SKATER_KINDS, STAMINA, SUPER_SHOT_COST, SURFACES } from "./constants"
+import { CURVE, FIXED_DT, GOAL, GOALIE, MATCH, PUCK, PUCK_KINDS, RINK, RULES, SKATER, SKATER_KINDS, STAMINA, SUPER_SHOT_COST, SURFACES, TACKLE } from "./constants"
 import { boardContact, collectContacts, GOALS, type Contact } from "./geometry"
 import type { ComboState, GameEvent, Goalie, Puck, Side, Skater, SkaterKind, SubEntry, World, WorldConfig } from "./types"
 
@@ -284,6 +284,67 @@ export function kick(w: World, id: string, angle: number, speed: number): boolea
   return true
 }
 
+/**
+ * Quitar (botón de defensa, sin la pelota). Lo dispara el humano con el defensor que controla.
+ *  - Normal: si el portador rival está al alcance corto, le saca la pelota de una (queda para el
+ *    defensor). Si falla, queda trabado un instante — no se puede spamear.
+ *  - Fuerte (barrida): llega más lejos y se tira encima; si acierta, deja la pelota suelta hacia
+ *    sus pies y el rival queda sin poder recogerla un rato; si falla, queda trabado más tiempo.
+ * Devuelve true si le pegó a la pelota (robo o barrida acertada).
+ */
+export function tackle(w: World, id: string, strong: boolean): boolean {
+  const s = findSkater(w, id)
+  const p = w.puck
+  if (!s || w.phase !== "play" || p.carrierId === id) return false
+  if (s.pickupCooldown > 0) return false // trabado por un quite fallido (o recién pateó)
+  const carrier = p.carrierId ? findSkater(w, p.carrierId) : undefined
+  const rival = carrier && carrier.side !== s.side ? carrier : undefined
+
+  // Pelota suelta: solo la barrida hace algo (se tira hacia ella), el quite normal no.
+  if (!rival) {
+    if (!strong) return false
+    const d = Math.hypot(p.x - s.x, p.y - s.y)
+    if (d > TACKLE.strongReach + 0.8) return false
+    const a = Math.atan2(p.y - s.y, p.x - s.x)
+    s.vx += Math.cos(a) * TACKLE.strongLunge
+    s.vy += Math.sin(a) * TACKLE.strongLunge
+    emit(w, { type: "tackle", id: s.id, strong: true, hit: true })
+    return true
+  }
+
+  const gap = Math.hypot(rival.x - s.x, rival.y - s.y) - s.radius - rival.radius
+  const reach = strong ? TACKLE.strongReach : TACKLE.reach
+  const a = Math.atan2(rival.y - s.y, rival.x - s.x)
+  const lunge = strong ? TACKLE.strongLunge : TACKLE.lunge
+  s.vx += Math.cos(a) * lunge
+  s.vy += Math.sin(a) * lunge
+  // El que acaba de recibir la pelota está protegido un instante — solo la barrida lo ignora.
+  const protectedNow = !strong && rival.controlGrace > 0
+  if (gap > reach || protectedNow) {
+    s.pickupCooldown = strong ? TACKLE.strongMissLock : TACKLE.missLock
+    emit(w, { type: "tackle", id: s.id, strong, hit: false })
+    return false
+  }
+  const prev = rival
+  releaseCarrier(w, prev, SKATER.lostCooldown)
+  if (strong) {
+    // Barrida: la pelota queda suelta y viaja hacia los pies del defensor.
+    const back = Math.atan2(s.y - prev.y, s.x - prev.x)
+    p.vx = Math.cos(back) * TACKLE.knockSpeed
+    p.vy = Math.sin(back) * TACKLE.knockSpeed
+    p.lastTouchId = s.id
+    p.lastTouchSide = s.side
+    p.spin = 0; p.superShot = false; p.comboShot = false
+    w.attackCombo = null
+  } else {
+    giveTo(w, s)
+    placeCarried(w, s)
+    emit(w, { type: "steal", id: s.id, from: prev.id })
+  }
+  emit(w, { type: "tackle", id: s.id, strong, hit: true })
+  return true
+}
+
 // ---------- paso de simulación ----------
 export function stepWorld(w: World, dt: number = FIXED_DT): void {
   for (const s of w.skaters) { s.px = s.x; s.py = s.y }
@@ -542,6 +603,26 @@ function updateGoalies(w: World, dt: number) {
     g.y += g.vy * dt
     g.y = clamp(g.y, geom.cy - limit, geom.cy + limit)
     g.vx = 0
+
+    // "La tiene el arquero": bocha casi quieta pegada a él (no en un penal, no llevada por nadie) →
+    // despeja solo tras un instante, de arco a arco pero hacia un costado (nunca al medio).
+    const puckSpeed = Math.hypot(p.vx, p.vy)
+    const near = Math.hypot(p.x - g.x, p.y - g.y) <= g.radius + p.radius + 0.7
+    if (!p.carrierId && !w.penaltyActive && w.phase === "play" && puckSpeed < GOALIE.holdSpeed && near) {
+      g.holdTimer = (g.holdTimer ?? 0) + dt
+      if (g.holdTimer >= GOALIE.holdDelay) {
+        const opp = GOALS[g.side === 0 ? 1 : 0]
+        const toY = p.y >= geom.cy ? 1 : -1 // hacia el costado por el que está la bocha
+        const ang = Math.atan2(opp.cy - g.y, opp.lineX - g.x) + toY * 0.35 * (opp.dir === -1 ? -1 : 1)
+        p.vx = Math.cos(ang) * GOALIE.holdClearSpeed
+        p.vy = Math.sin(ang) * GOALIE.holdClearSpeed
+        p.spin = 0
+        g.holdTimer = 0
+        emit(w, { type: "goalieClear", side: g.side, ny: toY })
+      }
+    } else {
+      g.holdTimer = 0
+    }
   }
 }
 

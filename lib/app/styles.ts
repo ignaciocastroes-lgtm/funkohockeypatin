@@ -19,6 +19,7 @@ export const CSS = `
 .fp-corner.bl{bottom:14px;left:14px;border-right:0;border-top:0}.fp-corner.br{bottom:14px;right:14px;border-left:0;border-top:0}
 
 .fp-menu{gap:22px}
+.fp-lang{position:absolute;right:max(10px,env(safe-area-inset-right));bottom:max(22px,calc(env(safe-area-inset-bottom) + 18px));display:flex;gap:4px;z-index:2}.fp-lang button{min-width:44px;min-height:32px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:rgba(15,23,42,.6);color:#e2e8f0;font-family:inherit;font-weight:700;font-size:12px;line-height:1;letter-spacing:.08em;cursor:pointer}.fp-lang button[aria-pressed=true]{background:#22d3ee;color:#04222a;border-color:#22d3ee}
 .fp-foot{position:absolute;left:0;right:0;bottom:max(4px,env(safe-area-inset-bottom));margin:0;text-align:center;font-size:11px;letter-spacing:.16em;color:#4ade80;opacity:.6;pointer-events:none;user-select:none}
 .fp-brand{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
 .fp-bolt{width:64px;height:64px;border-radius:50%;border:4px solid #ea580c;display:grid;place-items:center;box-shadow:0 0 28px #ea580c;color:#ea580c;cursor:pointer;-webkit-tap-highlight-color:transparent;overflow:hidden}
@@ -146,5 +147,6 @@ export const CSS = `
 @keyframes fp-jump{0%,100%{transform:translateY(0)}50%{transform:translateY(-15px)}}
 @keyframes fp-trophy-bob{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-9px) rotate(4deg)}}
 @keyframes fp-confetti-fall{0%{transform:translateY(-10px) rotate(0deg);opacity:1}100%{transform:translateY(170px) rotate(360deg);opacity:0}}
+@keyframes fp-superstar{0%,100%{box-shadow:0 0 12px 2px rgba(250,204,21,.45),inset 0 0 10px rgba(255,255,255,.15);transform:scale(1)}50%{box-shadow:0 0 26px 8px rgba(253,224,71,.9),0 0 44px 12px rgba(249,115,22,.5),inset 0 0 16px rgba(255,255,255,.4);transform:scale(1.06)}}
 @keyframes fp-superflash{0%{box-shadow:0 0 10px 2px rgba(250,204,21,.35),inset 0 0 10px rgba(255,255,255,.08);transform:scale(1)}30%{box-shadow:0 0 34px 10px rgba(253,224,71,.95),0 0 60px 18px rgba(249,115,22,.6),inset 0 0 18px rgba(255,255,255,.5);transform:scale(1.14)}100%{box-shadow:0 0 10px 2px rgba(250,204,21,.35),inset 0 0 10px rgba(255,255,255,.08);transform:scale(1)}}
 `

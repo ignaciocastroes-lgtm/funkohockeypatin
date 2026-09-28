@@ -152,6 +152,21 @@ export const SKATER = {
   boardRestitution: 0.2,
 } as const
 
+/** Botones de defensa (esquema "botones", sin la pelota): quitar / quitar fuerte. */
+export const TACKLE = {
+  /** Distancia máx. entre cuerpos (m, borde a borde) para sacarle la pelota de una. */
+  reach: 0.9,
+  /** Quitar fuerte: barrida, llega más lejos pero si falla queda trabado más tiempo. */
+  strongReach: 1.9,
+  /** Empujón de velocidad (m/s) hacia el rival al tirarse. */
+  lunge: 6,
+  strongLunge: 8,
+  missLock: 0.5,
+  strongMissLock: 1.0,
+  /** Velocidad (m/s) con la que la barrida deja la pelota suelta hacia los pies del defensor. */
+  knockSpeed: 4,
+} as const
+
 export const GOALIE = {
   /** Un poco más que los patinadores: el equipo (careta, guantes, pads) abulta el radio real. */
   radius: 0.58,
@@ -177,6 +192,12 @@ export const GOALIE = {
    *  saca de encima con el palo, hacia el costado — nunca al medio, que sería regalarla de nuevo.
    *  Empuje extra (m/s) que se suma al rebote elástico normal en cada atajada. */
   clearSpeed: 5.5,
+  /** Bocha más lenta que esto (m/s) y pegada al arquero = "la tiene el arquero". */
+  holdSpeed: 1.2,
+  /** Cuánto (s) la sostiene antes de despejar solo — un instante, no una eternidad. */
+  holdDelay: 0.5,
+  /** Velocidad (m/s) del despeje automático. */
+  holdClearSpeed: 9,
   /** Si la bocha cambia de dirección de golpe estando ya "entrando" (un desvío en un poste o un
    *  patinador) el arquero, que ya estaba alerta, tarda esto en volver a girar hacia la nueva
    *  trayectoria — más corto que `reactionDelay` (no arranca de cero: ya estaba mirando para ahí). */

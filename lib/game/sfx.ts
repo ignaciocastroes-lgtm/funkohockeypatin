@@ -186,6 +186,8 @@ export class Sfx {
       case "foul": this.whistle("foul", 0.45, 0.22, 1.0); break
       case "penalty": this.whistle("penalty", 0.6, 0.26, 1.0); break
       case "kickoff": this.whistle("kickoff", 0.22, 0.16, 0.3); break
+      case "tackle": if (ev.hit) this.noise("hit", 0.07, ev.strong ? 0.26 : 0.16, ev.strong ? 300 : 700, 2); else this.noise("miss", 0.06, 0.08, 1200, 1.2); break
+      case "goalieClear": this.noise("kick", 0.05, 0.2, 1500, 4.5); break
       case "steal": this.tone("steal", "square", 420, 300, 0.08, 0.14); break
       case "goal": this.tone("goal", "sawtooth", 300, 700, 0.7, 0.22, 0.5); break
       case "end": this.whistle("end", 0.75, 0.24, 1.5); break

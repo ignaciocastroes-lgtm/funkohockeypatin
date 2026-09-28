@@ -1,3 +1,9 @@
+import { qrSvg } from "../game/qr"
+import { GuestSession, HostSession } from "../net/session"
+import { newRoomCode, normalizeRoomCode, joinUrl, roomFromSearch } from "../net/room"
+import { WebSocketTransport, relayBaseUrl, relayUrl } from "../net/transport"
+import type { HelloOpts } from "../net/protocol"
+import { LANGS, LANG_LABEL, detectLang, observeLocalization, setLang, type Lang } from "../game/i18n"
 import { mountMatch } from "../game/match"
 import { digitFromCode } from "../game/input"
 import { shouldShowCupTutorial } from "./tutorial"
@@ -34,7 +40,7 @@ export interface AppHandle {
   readonly debug: { screen: () => string; match: () => MatchHandle | null; saved: () => Saved }
 }
 
-type Screen = "menu" | "setup" | "editor" | "credits" | "match" | "cup" | "training"
+type Screen = "menu" | "online" | "setup" | "editor" | "credits" | "match" | "cup" | "training"
 type Child = Node | string | null | undefined | false
 
 /** Evento no estándar (Chrome/Edge/Android) que avisa que la página se puede instalar como app. */
@@ -132,6 +138,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       : screen === "setup" ? setupScreen()
       : screen === "editor" ? editorScreen()
       : screen === "credits" ? creditsScreen()
+      : screen === "online" ? onlineScreen()
       : screen === "cup" ? cupScreen()
       : screen === "training" ? trainingScreen()
       : null
@@ -184,6 +191,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         h("button", { class: "fp-btn solid", "data-key": "play", onclick: () => startMatch() }, "Jugar partido"),
         h("p", { class: "fp-summary" }, `${local.name} vs ${visit.name} · ${fmtDur(opts.durationOverride ?? s.duration)} · ${NIVEL_LABEL[s.nivel]}`),
         h("button", { class: "fp-btn cy", "data-key": "setup", onclick: () => go("setup") }, "Equipos y ajustes"),
+        h("button", { class: "fp-btn gr", "data-key": "online", onclick: () => go("online") }, "2 jugadores (con código)"),
         h("button", { class: "fp-btn ye", "data-key": "cup", onclick: () => go("cup") }, saved.cup ? "Copa (en curso)" : "Copa"),
         h("button", { class: "fp-btn ye", "data-key": "new", onclick: () => openEditor(null) }, "Crear equipo"),
         h("button", { class: "fp-btn gr", "data-key": "demo", onclick: () => startDemo() }, "Modo demo (IA vs IA)"),
@@ -197,7 +205,20 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         canOfferInstall() ? h("button", { class: "fp-btn gr", "data-key": "install", onclick: () => handleInstallClick() }, "📲 Instalar la app") : null,
       ),
       // marca al pie: el marcador del juego es el de ardisport.cl (texto, no link: un link chico rompería los 44 px)
+      langSwitch(),
       h("p", { class: "fp-foot" }, "ardisport.cl"),
+    )
+  }
+
+  /** Selector de idioma (ES / PT). Cambiarlo reconstruye la pantalla: el DOM nuevo nace en español y
+   *  `observeLocalization` lo traduce solo. */
+  function langSwitch(): HTMLElement {
+    const cur = saved.settings.lang ?? detectLang(typeof navigator !== "undefined" ? navigator.language : "es")
+    return h("div", { class: "fp-lang", role: "group", "aria-label": "Idioma / Língua" },
+      ...LANGS.map((l: Lang) => h("button", {
+        type: "button", "data-key": `lang-${l}`, "aria-pressed": String(l === cur), lang: l,
+        onclick: () => { saved.settings.lang = l; persist(); setLang(l); root.setAttribute("lang", l); render() },
+      }, LANG_LABEL[l])),
     )
   }
 
@@ -266,10 +287,6 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         segmented<Nivel>("Nivel del rival", "nivel", NIVELES, s.nivel, (v) => { s.nivel = v; persist(); render() }),
         segmented<number>("Duración", "dur", DURATIONS.map((d) => ({ value: d, label: fmtDur(d) })), s.duration, (v) => { s.duration = v; persist(); render() }),
         segmented<string>("Dedos", "hand", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => { s.leftHanded = v === "l"; persist(); render() }),
-        segmented<"honda" | "botones">("Control", "control-scheme", [
-          { value: "honda", label: "Honda (estirar y soltar)" },
-          { value: "botones", label: "Botones (stick + 4 botones: pase/fuerte/tiro/súper)" },
-        ], s.controlScheme, (v) => { s.controlScheme = v; persist(); render() }),
         segmented<string>("Sonido", "snd", [{ value: "on", label: "Con sonido" }, { value: "off", label: "Silencio" }], s.sound ? "on" : "off", (v) => { s.sound = v === "on"; persist(); render() }),
         segmented<Settings["music"]>("Música de fondo", "music", [{ value: "on", label: "Prendida" }, { value: "low", label: "Atenuada" }, { value: "off", label: "Apagada" }], s.music, (v) => { s.music = v; persist(); render() }),
         segmented<PuckKind>("Bocha", "puck-kind", PUCK_KIND_OPTIONS, s.puckKind, (v) => { s.puckKind = v; persist(); render() }),
@@ -396,6 +413,13 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     ])
   }
 
+  /** QR de ardisport.cl (la marca del marcador): se escanea desde otro celu o desde la compu. */
+  function ardisportQr(): HTMLElement {
+    const box = h("div", { class: "fp-qr", style: "margin:0 auto;width:150px;height:150px;border-radius:10px;overflow:hidden;box-shadow:0 0 18px rgba(74,222,128,.35)", role: "img", "aria-label": "Código QR de ardisport.cl" })
+    try { box.innerHTML = qrSvg("https://ardisport.cl", 150) } catch { /* sin QR no se cae nada */ }
+    return box
+  }
+
   function creditsScreen(): HTMLElement {
     return h("main", { class: "fp-screen fp-scroll", style: "text-align:center;gap:18px" },
       h("h2", { class: "fp-arcade", style: "color:#2dd4bf;margin:0;font-size:clamp(18px,4vw,34px)" }, "CRÉDITOS"),
@@ -407,6 +431,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       h("p", { style: "margin:0;font-size:clamp(13px,2.4vw,18px);line-height:1.8;color:rgba(255,255,255,.85)" },
         "Marcador oficial: ", h("b", { style: "color:#4ade80" }, "ardisport.cl"), h("br"),
         "Un saludo especial a ", h("b", { style: "color:#f472b6" }, "BYN"), " y a mis ", h("b", { style: "color:#f472b6" }, "4 hijos"), "."),
+      ardisportQr(),
       h("p", { style: "margin:0;font-size:clamp(12px,2.2vw,16px);line-height:1.7;color:rgba(255,255,255,.7)" },
         "Público de las gradas: grabaciones de estadio de ", h("b", {}, "mykelu"), ", ", h("b", {}, "arunangshubanerjee"), ", ",
         h("b", {}, "u_xg7ssi08yr"), " y ", h("b", {}, "vishiv"), " (Pixabay), editadas para el juego."),
@@ -519,7 +544,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   // ---------- partido ----------
-  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "puckKind" | "nivel" | "duration" | "leftHanded" | "controlScheme" | "sound" | "music" | "graphicsSaver" | "debug"> {
+  function teamMatchOptions(localId: string, visitId: string): Pick<MatchOptions, "teams" | "surface" | "puckKind" | "nivel" | "duration" | "leftHanded" | "sound" | "music" | "graphicsSaver" | "debug"> {
     const s = saved.settings
     const local = teamById(localId)
     const visit = teamById(visitId)
@@ -532,7 +557,6 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       nivel: s.nivel,
       duration: opts.durationOverride ?? s.duration,
       leftHanded: s.leftHanded,
-      controlScheme: s.controlScheme,
       sound: s.sound,
       music: s.music,
       graphicsSaver: s.graphicsSaver,
@@ -551,6 +575,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     demoFromBoot = false
     godPlaying = false
     trainingPlaying = null
+    netInfo = null
   }
 
   /** Barra fija sobre el partido en curso. En partido real: pausa + cambio de vista, nada más —
@@ -592,16 +617,155 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       }
       const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Cómo se juega" },
         h("h2", { class: "fp-arcade" }, "CÓMO SE JUEGA"),
-        h("p", { class: "fp-note" }, "Izquierdo (o WASD/flechas): movés al jugador que lleva el puck."),
-        h("p", { class: "fp-note" }, "Derecho: deslizá para pasar o tirar — roce suave es pase, latigazo es tiro."),
-        h("p", { class: "fp-note" }, "Tocá a un compañero (con cualquier dedo, hasta con el izquierdo) para pasarle. Un toque suelto a la derecha (o Espacio) es pase automático al mejor."),
-        h("p", { class: "fp-note" }, "En computadora: Q cambia de jugador; J pase corto, K tiro, L pase largo, I tiro fuerte/súper (mantené para cargar potencia, soltá para patear)."),
+        h("p", { class: "fp-note" }, "Stick (o WASD/flechas): movés al jugador y elegís hacia dónde va el tiro o el pase."),
+        h("p", { class: "fp-note" }, "Con la pelota: PASE, PASE FUERTE, TIRO y TIRO FUERTE (con estrella ★ sale SÚPER TIRO). Cada botón actúa al instante, sin cargar."),
+        h("p", { class: "fp-note" }, "Sin la pelota: QUITAR y QUITAR FUERTE (barrida) le sacan la pelota al rival; ◀ CAMBIO y CAMBIO ▶ pasan al jugador de la izquierda o la derecha."),
+        h("p", { class: "fp-note" }, "Un toque suelto sobre un compañero también le pasa. En computadora: J pase/quitar, L pase fuerte/quitar fuerte, K tiro/jugador ◀, I tiro fuerte/jugador ▶, Q cambia de jugador."),
         h("button", { class: "fp-btn solid", "data-key": "tutorial-ok", onclick: () => dismiss(false) }, "Entendido"),
         h("button", { class: "fp-btn", "data-key": "tutorial-never", onclick: () => dismiss(true) }, "No volver a mostrar"),
       )
       openModal(wrap, h("div", { class: "fp-overlay" }, box))
       timer = window.setTimeout(() => dismiss(false), 20000)
     }, 900)
+  }
+
+  // ---------- 2 jugadores con código (sin cuentas) ----------
+  /** Partido online en curso: rol y armado (para el cartel del final y el menú de pausa). */
+  let netInfo: { role: "host" | "guest"; opts: HelloOpts } | null = null
+  type Lobby = { role: "host" | "guest"; code: string; status: string; session: HostSession | GuestSession | null; transport: WebSocketTransport | null }
+  let lobby: Lobby | null = null
+  let lobbyMsg = ""
+
+  function closeLobby() {
+    const l = lobby
+    lobby = null
+    if (l?.session) l.session.close()
+    else l?.transport?.close()
+  }
+
+  function relayErrorText(code: number, hosting: boolean): string {
+    if (code === 4404) return "No encontramos esa sala. Revisá el código (o pedile a tu rival que la cree de nuevo)."
+    if (code === 4409) return hosting ? "Ese código ya está en uso. Probá crear la sala otra vez." : "Esa sala ya tiene rival."
+    if (code === 4503) return "El servidor está lleno ahora. Probá en un rato."
+    if (code === 4429) return "Demasiados intentos seguidos. Esperá un minuto."
+    return "No se pudo conectar con el servidor de salas. Revisá tu conexión."
+  }
+
+  function lobbyFail(text: string) {
+    closeLobby()
+    lobbyMsg = text
+    if (!destroyed && screen === "online") render()
+  }
+
+  function hostHello(): HelloOpts {
+    const mo = matchOptions()
+    const out: HelloOpts = { teams: mo.teams as HelloOpts["teams"], surface: mo.surface, puckKind: mo.puckKind ?? "normal", duration: mo.duration }
+    return out
+  }
+
+  function createRoom() {
+    const base = relayBaseUrl()
+    if (!base) return
+    closeLobby()
+    lobbyMsg = ""
+    const code = newRoomCode()
+    const t = new WebSocketTransport(relayUrl(base, code, "host"))
+    const session = new HostSession(t, hostHello())
+    lobby = { role: "host", code, status: "Esperando al rival…", session, transport: t }
+    session.onGuestJoined = () => {
+      const l = lobby
+      if (!l || l.session !== session) return
+      lobby = null // el partido se queda con la sesión
+      startNetMatch("host", session, hostHello())
+    }
+    session.onClosed = () => { if (lobby && lobby.session === session) lobbyFail(relayErrorText(t.closeCode, true)) }
+    render()
+  }
+
+  function joinRoom(raw: string) {
+    const code = normalizeRoomCode(raw)
+    if (!code) { lobbyMsg = "El código tiene 5 letras o números (sin 0, O, 1, I, L)."; render(); return }
+    const base = relayBaseUrl()
+    if (!base) return
+    closeLobby()
+    lobbyMsg = ""
+    screen = "online"
+    const t = new WebSocketTransport(relayUrl(base, code, "guest"))
+    const session = new GuestSession(t)
+    lobby = { role: "guest", code, status: "Conectando…", session, transport: t }
+    session.onHello = (o) => {
+      if (!lobby || lobby.session !== session) return
+      lobby = null
+      startNetMatch("guest", session, o)
+    }
+    session.onClosed = () => { if (lobby && lobby.session === session) lobbyFail(relayErrorText(t.closeCode, false)) }
+    render()
+  }
+
+  function startNetMatch(role: "host" | "guest", session: HostSession | GuestSession, hello: HelloOpts) {
+    stopMatch()
+    maybeAutoFullscreen()
+    screen = "match"
+    netInfo = { role, opts: hello }
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const s = saved.settings
+    const mySide = role === "host" ? 0 : 1
+    const m = mountMatch(wrap, {
+      teams: hello.teams, surface: hello.surface, puckKind: hello.puckKind, venue: hello.venue, nivel: "normal", duration: hello.duration,
+      leftHanded: s.leftHanded, sound: s.sound, music: s.music, graphicsSaver: s.graphicsSaver, debug: opts.debug,
+      net: role === "host" ? { role: "host", session: session as HostSession } : { role: "guest", session: session as GuestSession },
+      onNetClosed: () => showDialog("Se cortó la conexión", "El otro jugador se fue o se perdió la conexión.", [{ label: "Salir al menú", primary: true, onClick: () => { stopMatch(); go("menu") } }], wrap),
+      onEnd: (r) => {
+        const pb = wrap.querySelector<HTMLButtonElement>('[data-key="pause"]')
+        if (pb) { pb.disabled = true; pb.setAttribute("aria-disabled", "true") }
+        endTimer = window.setTimeout(() => showEnd(wrap, r, { names: [hello.teams[0].name, hello.teams[1].name], colors: [hello.teams[0].color, hello.teams[1].color], mySide }), 1600)
+      },
+    })
+    match = m
+    wrap.append(matchHudBar(wrap, m))
+  }
+
+  function onlineScreen(): HTMLElement {
+    const base = relayBaseUrl()
+    const back = () => { closeLobby(); lobbyMsg = ""; go("menu") }
+    const l = lobby
+    const codeInput = h("input", { id: "fp-code", class: "fp-input", type: "text", maxlength: "9", inputmode: "text", autocomplete: "off", autocapitalize: "characters", placeholder: "CÓDIGO", "data-key": "room-code", style: "text-align:center;letter-spacing:.3em;font-size:22px;text-transform:uppercase" })
+    let body: HTMLElement
+    if (!base) {
+      body = h("section", { class: "fp-panel" },
+        h("p", { class: "fp-note" }, "El modo de 2 jugadores necesita un servidor de salas y este juego todavía no tiene uno configurado."),
+        h("p", { class: "fp-note" }, "Quien publica el juego lo configura una vez (ver docs/RELAY.md). Mientras tanto podés jugar contra la IA."))
+    } else if (l && l.role === "host") {
+      const url = joinUrl(typeof location !== "undefined" ? location.href : "https://example.invalid/", l.code)
+      const qr = h("div", { class: "fp-qr", style: "width:128px;height:128px;border-radius:10px;overflow:hidden;flex:none", role: "img", "aria-label": "Código QR para unirse" })
+      try { qr.innerHTML = qrSvg(url, 128) } catch { /* sin QR se puede igual con el código */ }
+      body = h("section", { class: "fp-panel", style: "text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center" },
+        h("p", { class: "fp-note" }, "Pasale este código a tu rival (o que escanee el QR):"),
+        h("div", { style: "display:flex;flex-wrap:wrap;gap:16px 28px;align-items:center;justify-content:center" },
+          h("p", { class: "fp-arcade", "data-key": "room-code-show", style: "font-size:clamp(34px,9vw,60px);letter-spacing:.18em;margin:0;color:#facc15" }, l.code),
+          qr),
+        h("p", { class: "fp-note" }, l.status),
+        h("p", { class: "fp-note" }, "Vos jugás con el equipo local y tu rival con la visita. Cancha y duración: las de tus ajustes."),
+        h("button", { class: "fp-btn", "data-key": "cancel-room", onclick: () => { closeLobby(); render() } }, "Cancelar"))
+    } else if (l && l.role === "guest") {
+      body = h("section", { class: "fp-panel", style: "text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center" },
+        h("p", { class: "fp-arcade", style: "font-size:clamp(28px,8vw,48px);letter-spacing:.18em;margin:0;color:#22d3ee" }, l.code),
+        h("p", { class: "fp-note" }, l.status),
+        h("button", { class: "fp-btn", "data-key": "cancel-room", onclick: () => { closeLobby(); render() } }, "Cancelar"))
+    } else {
+      body = h("section", { class: "fp-panel", style: "display:flex;flex-direction:column;gap:14px" },
+        h("button", { class: "fp-btn solid", "data-key": "create-room", onclick: createRoom }, "Crear sala"),
+        h("p", { class: "fp-note" }, "Te da un código de 5 caracteres para pasarle a tu rival. Sin cuentas ni registro."),
+        h("div", { style: "display:flex;gap:8px;align-items:stretch" }, codeInput,
+          h("button", { class: "fp-btn cy", "data-key": "join-room", onclick: () => joinRoom((codeInput as HTMLInputElement).value) }, "Unirme")),
+        h("p", { class: "fp-note" }, "¿Te pasaron un código? Escribilo acá y tocá Unirme."))
+    }
+    return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
+      topBar("2 JUGADORES", "#4ade80", back),
+      lobbyMsg ? h("p", { class: "fp-error", role: "alert" }, lobbyMsg) : null,
+      body,
+    ))
   }
 
   function startMatch() {
@@ -1135,8 +1299,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   }
 
   /** Ajustes de control desde la pausa: diestro/zurdo se aplica EN VIVO (no hace falta reiniciar).
-   *  Honda/botones sí reinicia — el esquema de botones tiene sus propios botones armados en el DOM
-   *  solo al montar el partido, no hay forma de aparecerlos/sacarlos sin volver a montar. */
+   *  (Ya no hay elección de esquema: es stick + 4 botones para todos.) */
   function showControlSettings(wrap: HTMLElement) {
     if (!match) return
     const s = saved.settings
@@ -1144,29 +1307,12 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     const isDemo = demoPlaying
     const gp = godPlaying
     const tp = trainingPlaying
-    const restartWithNewScheme = () => {
-      if (isDemo) startDemo()
-      else if (gp) startGodMode()
-      else if (tp) startTraining(tp.goalie, tp.penalties, tp.puckKind)
-      else if (cp) startCupMatch(cp.which, cp.home, cp.away)
-      else startMatch()
-    }
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Ajustes de control" },
       h("h2", { class: "fp-arcade" }, "CONTROL"),
       segmented<string>("Dedos", "hand-pause", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => {
         s.leftHanded = v === "l"
         persist()
         match?.setLeftHanded(s.leftHanded)
-      }),
-      segmented<"honda" | "botones">("Esquema", "scheme-pause", [
-        { value: "honda", label: "Honda (estirar y soltar)" },
-        { value: "botones", label: "Botones (stick + 4 botones: pase/fuerte/tiro/súper)" },
-      ], s.controlScheme, (v) => {
-        if (v === s.controlScheme) return
-        showDialog("¿Cambiar de esquema de control?", "Esto reinicia el partido — no hay forma de cambiar los botones en pantalla sin volver a armar la cancha.", [
-          { label: "Cambiar y reiniciar", danger: true, onClick: () => { s.controlScheme = v; persist(); restartWithNewScheme() } },
-          { label: "Cancelar", onClick: () => showControlSettings(wrap) },
-        ], wrap)
       }),
       segmented<string>("Rendimiento", "perf-pause", [{ value: "alta", label: "Alta calidad" }, { value: "ahorro", label: "Ahorro (celulares lentos)" }], s.graphicsSaver ? "ahorro" : "alta", (v) => {
         s.graphicsSaver = v === "ahorro"
@@ -1230,6 +1376,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startGodMode() }, "Otra final")
         : tp
         ? h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => startTraining(tp.goalie, tp.penalties, tp.puckKind) }, "Reiniciar entrenamiento")
+        : netInfo ? null
         : h("button", { class: "fp-btn cy", "data-key": "restart", onclick: () => showDialog("¿Reiniciar el partido?", "Empiezas de nuevo con 0-0.", [
             { label: "Reiniciar", danger: true, onClick: () => (cp ? startCupMatch(cp.which, cp.home, cp.away) : startMatch()) },
             { label: "Cancelar", onClick: () => showPause(wrap) },
@@ -1244,25 +1391,27 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     openModal(wrap, h("div", { class: "fp-overlay" }, box))
   }
 
-  function showEnd(wrap: HTMLElement, r: MatchResult) {
+  function showEnd(wrap: HTMLElement, r: MatchResult, net?: { names: [string, string]; colors: [string, string]; mySide: 0 | 1 }) {
     if (!match || destroyed) return
     closeDialog()
     const s = saved.settings
     const local = teamById(s.localId)
     const visit = teamById(s.visitId)
-    const [lc, vc] = distinctColors(local.color, visit.color)
-    const won = r.score[0] > r.score[1]
+    const [lc, vc] = net ? net.colors : distinctColors(local.color, visit.color)
+    const lname = net ? net.names[0] : local.name
+    const vname = net ? net.names[1] : visit.name
+    const won = net ? r.score[net.mySide] > r.score[net.mySide === 0 ? 1 : 0] : r.score[0] > r.score[1]
     const draw = r.score[0] === r.score[1]
     const row = (label: string, a: number, b: number) => h("tr", {}, h("td", { style: `color:${lc}` }, String(a)), h("td", {}, label), h("td", { style: `color:${vc}` }, String(b)))
     const box = h("div", { class: "fp-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Fin del partido", style: "max-width:520px" },
       h("p", { class: "fp-result fp-arcade", style: `color:${draw ? "#e5e7eb" : won ? "#facc15" : "#f87171"}` }, draw ? "¡EMPATE!" : won ? "¡GANASTE!" : "PERDISTE"),
       h("div", { class: "fp-score" }, h("span", { style: `color:${lc}` }, String(r.score[0])), h("span", { style: "font-size:.6em;opacity:.7" }, "-"), h("span", { style: `color:${vc}` }, String(r.score[1]))),
       h("div", { style: "display:flex;justify-content:space-between;font-size:12px;letter-spacing:.06em" },
-        h("b", { style: `color:${lc}` }, local.name), h("b", { style: `color:${vc}` }, visit.name)),
+        h("b", { style: `color:${lc}` }, lname), h("b", { style: `color:${vc}` }, vname)),
       h("table", { class: "fp-stats", "aria-label": "Estadísticas" },
         h("tbody", {}, row("Tiros", r.shots[0], r.shots[1]), row("Pases completos", r.passes[0], r.passes[1]), row("Robos", r.steals[0], r.steals[1]), row("Faltas", r.fouls[0], r.fouls[1]))),
       h("div", { class: "fp-row" },
-        h("button", { class: "fp-btn solid", "data-key": "rematch", onclick: () => startMatch() }, "Revancha"),
+        net ? null : h("button", { class: "fp-btn solid", "data-key": "rematch", onclick: () => startMatch() }, "Revancha"),
         h("button", { class: "fp-btn gr", "data-key": "menu", onclick: () => { stopMatch(); go("menu") } }, "Menú"),
       ),
     )
@@ -1293,19 +1442,33 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     if (screen === "match") {
       const wrap = view.querySelector<HTMLElement>(".fp-match")
       if (!wrap || !match || match.ended) return
-      if (dialog && match.paused) { closeDialog(); match.resume() } else showPause(wrap)
-    } else if (screen === "setup" || screen === "credits" || screen === "cup" || screen === "training") go("menu")
+      if (dialog && (match.paused || netInfo)) { closeDialog(); match.resume() } else showPause(wrap)
+    } else if (screen === "online") { closeLobby(); lobbyMsg = ""; go("menu") }
+    else if (screen === "setup" || screen === "credits" || screen === "cup" || screen === "training") go("menu")
     else if (screen === "editor") go(editing ? "setup" : "menu")
   }
   document.addEventListener("keydown", onKey)
 
   // Arranca directo en modo demo (attract mode) en vez del menú — tocar la pantalla durante
   // este demo de arranque va al menú, no a un partido (eso sí pasa si abrís el demo desde el botón).
-  startDemo(true)
+  const initialLang: Lang = saved.settings.lang ?? detectLang(typeof navigator !== "undefined" ? navigator.language : "es")
+  setLang(initialLang)
+  root.setAttribute("lang", initialLang)
+  const stopI18n = observeLocalization(root)
+  // Link/QR de invitación (?sala=CODIGO): entra directo a esa sala en vez del demo de arranque.
+  let invite: string | null = null
+  try { invite = typeof location !== "undefined" ? roomFromSearch(location.search) : null } catch { invite = null }
+  if (invite && relayBaseUrl()) {
+    try { history.replaceState(null, "", location.pathname) } catch { /* sin history: no importa */ }
+    joinRoom(invite)
+  } else startDemo(true)
 
   return {
     destroy() {
       destroyed = true
+      closeLobby()
+      stopI18n()
+      setLang("es")
       document.removeEventListener("keydown", onKey)
       window.removeEventListener("resize", fitScrollPadding)
       window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt)

@@ -1,3 +1,4 @@
+import { isLang, type Lang } from "../game/i18n"
 import type { Nivel } from "../game/match"
 import type { MusicLevel } from "../game/crowd"
 import type { PuckKind } from "../engine"
@@ -16,9 +17,6 @@ export interface Settings {
   localId: string
   visitId: string
   leftHanded: boolean
-  /** Esquema de control: "honda" (Angry Birds — estirás y soltás) o "botones" (arcade clásico —
-   *  el dedo maneja como un stick, pase y tiro son botones con medidor de potencia). */
-  controlScheme: "honda" | "botones"
   sound: boolean
   /** Música de fondo (ambiente de fiesta en las gradas, independiente de los efectos/público):
    *  prendida, atenuada o apagada — no afecta al resto del público ni a los efectos. */
@@ -41,6 +39,8 @@ export interface Settings {
    *  siempre (no se vuelve a bloquear si después se pierde una Copa nueva). De ahí en más, la
    *  final de la Copa se juega ahí, y queda disponible para elegir en entrenamiento y en el demo. */
   cantoniUnlocked: boolean
+  /** Idioma elegido a mano. Sin esto (undefined) se usa el del navegador. */
+  lang?: Lang
 }
 
 export interface Saved {
@@ -56,7 +56,6 @@ export const DEFAULT_SETTINGS: Settings = {
   localId: DEFAULT_TEAMS[0].id,
   visitId: DEFAULT_TEAMS[1].id,
   leftHanded: false,
-  controlScheme: "honda",
   sound: true,
   music: "on",
   tutorialOptOut: false,
@@ -149,7 +148,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (typeof s.localId === "string") out.settings.localId = s.localId
     if (typeof s.visitId === "string") out.settings.visitId = s.visitId
     if (typeof s.leftHanded === "boolean") out.settings.leftHanded = s.leftHanded
-    if (s.controlScheme === "honda" || s.controlScheme === "botones") out.settings.controlScheme = s.controlScheme
+    // Partidas viejas guardaban `controlScheme` ("honda"/"botones"): ese ajuste ya no existe y se ignora.
     if (typeof s.sound === "boolean") out.settings.sound = s.sound
     if (s.music === "on" || s.music === "low" || s.music === "off") out.settings.music = s.music
     else if (typeof s.music === "boolean") out.settings.music = s.music ? "on" : "off" // migración de una versión anterior (era on/off nomás)
@@ -161,6 +160,7 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (s.puckKind === "liviana" || s.puckKind === "normal" || s.puckKind === "pesada") out.settings.puckKind = s.puckKind
     if (typeof s.graphicsSaver === "boolean") out.settings.graphicsSaver = s.graphicsSaver
     if (typeof s.cantoniUnlocked === "boolean") out.settings.cantoniUnlocked = s.cantoniUnlocked
+    if (isLang(s.lang)) out.settings.lang = s.lang
     out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)
   } catch (err) {

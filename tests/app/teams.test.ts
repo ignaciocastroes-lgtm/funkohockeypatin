@@ -220,3 +220,17 @@ test("selecciones nacionales: pack completo, ids únicos, escudos de bandera vá
     assert.equal(t.roster.length, 6)
   }
 })
+
+import { CLUB_TEAMS } from "../../lib/app/teams"
+test("clubes reales: hay un club chileno, marcado como real, con permiso pendiente y plantilla inventada", () => {
+  const cl = CLUB_TEAMS.filter((t) => t.real?.pais === "Chile")
+  assert.ok(cl.length >= 1, "falta el club chileno")
+  for (const t of cl) {
+    assert.ok(t.builtin && DEFAULT_TEAMS.includes(t), `${t.name} debería estar entre los equipos de fábrica`)
+    assert.ok(isCrest(t.crest) && HEX.test(t.color) && t.roster.length === 6)
+    assert.ok(t.real!.fuente.length > 5, "todo club real cita de dónde sale el dato")
+    assert.equal(t.real!.permiso, "pendiente", "hasta que el club conteste, el permiso figura como pendiente")
+    // No se cuelan nombres de jugadores reales: los apodos de plantilla son palabras sueltas
+    for (const p of t.roster) assert.ok(!/\s/.test(p.name), `${p.name}: parece un nombre y apellido real`)
+  }
+})

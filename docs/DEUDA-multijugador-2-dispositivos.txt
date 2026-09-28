@@ -1,6 +1,12 @@
 DEUDA TÉCNICA — SEGUNDO JUGADOR EN OTRO CELULAR (Android/iPhone)
 ==================================================================
-Estado: DISEÑADO, NO IMPLEMENTADO. Nada de este documento tiene código todavía.
+ESTADO (actualizado 28-sep-2026): IMPLEMENTADO Y PROBADO EN LOCAL, NO EN CELULARES REALES.
+Hecho: lib/net/* (sala, protocolo validado, snapshots, sesiones), relay/server.cjs (sin dependencias),
+pantalla de sala con código y QR, partido host/invitado. Probado con tests y con 2 Chromium reales
+(scripts/e2e-2p.cjs). Falta: publicar el relay en wss:// y probar con Android + iPhone. Ver docs/RELAY.md.
+Las secciones de abajo son el diseño original (la opción B, relay + un solo lado simula, fue la elegida).
+
+Estado original: DISEÑADO, NO IMPLEMENTADO.
 Origen: charla de auditoría, Ronda 40+. Se deja como referencia para retomar.
 
 
