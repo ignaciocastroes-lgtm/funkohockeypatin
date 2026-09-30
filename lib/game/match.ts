@@ -45,8 +45,13 @@ import { DemoTutor } from "./demo-tutor"
 import { DemoDirector } from "./demo-director"
 import type { MusicLevel } from "./crowd"
 import { Sfx } from "./sfx"
+import { MissionTracker } from "./missions"
+import type { MissionDef } from "./missions"
 
 export type Nivel = "facil" | "normal" | "dificil"
+/** Ritmo de la IA rival por nivel — NO inteligencia (ver `AIOptions.skill`): a cualquier nivel la
+ *  IA lee el partido igual de bien (pases, marca, cuándo tirar); lo único que cambia con el nivel
+ *  es qué tan rápido patina y tira. */
 export const NIVEL_SKILL: Record<Nivel, number> = { facil: 0.3, normal: 0.6, dificil: 0.9 }
 
 export interface MatchTeam {
@@ -104,8 +109,14 @@ export interface MatchOptions {
   /** Modo entrenamiento: sin equipo rival (la IA no controla nada del lado visita, queda quieto),
    *  arquero configurable por lado, para practicar tiros libremente. `penalties`: en vez de tiros
    *  libres, arma un penal tras otro contra el arquero rival (mano a mano, con el tanque de energía
-   *  siempre lleno) — practicar penales y súper tiros sin depender de llegar cansado o de un partido. */
-  training?: { goalie: "local" | "visita" | "ninguno"; penalties?: boolean }
+   *  siempre lleno) — practicar penales y súper tiros sin depender de llegar cansado o de un partido.
+   *  `scrimmage`: el rival SÍ juega (misión 6, "partido de verdad") — la IA controla los dos lados,
+   *  como en un partido normal, pero con el resto del entrenamiento (sin público, sin límite real
+   *  de tiempo). `mission`: si viene, arranca un `MissionTracker` para esa misión (ver `onMissionDone`). */
+  training?: { goalie: "local" | "visita" | "ninguno" | "ambos"; penalties?: boolean; scrimmage?: boolean; mission?: MissionDef }
+  /** Solo con `training.mission`: se llama UNA sola vez, la primera vez que se logra la misión en
+   *  esta sesión (seguir jugando después no la vuelve a disparar). */
+  onMissionDone?: () => void
   /** Tanda de penales para desempatar la Copa: 3 por lado, alternados (mano a mano, arquero
    *  centrado — el mismo mecanismo que el penal de 3 faltas). Si siguen empatados después de los
    *  3, se sigue una ronda más a la vez hasta que se decida. Reemplaza a la muerte súbita para esto. */
@@ -197,9 +208,15 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     surface: o.surface,
     puckKind: o.puckKind,
     duration: o.duration,
-    goalies: o.training ? [o.training.goalie === "local", o.training.goalie === "visita"] : undefined,
+    goalies: o.training
+      ? [o.training.goalie === "local" || o.training.goalie === "ambos", o.training.goalie === "visita" || o.training.goalie === "ambos"]
+      : undefined,
     kinds: [o.teams[0].kinds, o.teams[1].kinds],
     names: [o.teams[0].names, o.teams[1].names],
+    // Mismo ritmo que la IA de campo (ver `TeamAI`): el arquero rival también corre más rápido
+    // con el nivel elegido (nunca "más vivo") — Dios vs Dios (`aiSkill` forzado) se lo lleva
+    // puesto a los dos arqueros también.
+    goalieSkill: o.aiSkill ?? [0.7, NIVEL_SKILL[o.nivel]],
   })
   // ---------- 2P online ----------
   const netHost = o.net?.role === "host" ? o.net.session : null
@@ -214,6 +231,8 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let snapAt = 0
   const SNAP_MS = 50 // el host manda ~20 snapshots por segundo
   const ai = new TeamAI({ skill: o.aiSkill ?? [0.7, NIVEL_SKILL[o.nivel]], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
+  const mission = o.training?.mission ? new MissionTracker(o.training.mission) : null
+  let missionDoneNotified = false
   const stepper = new FixedStepper()
   const cam = new Camera()
   const input = new TouchInput({ width: 1, height: 1, leftHanded: o.leftHanded })
@@ -652,6 +671,8 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   /** Reacciona a UN evento del motor (sonido, cartel, festejo...). Lo usan el host (eventos propios) y el invitado (los que le llegan). */
   function handleEvent(ev: GameEvent, now: number) {
     countEvent(ev)
+    mission?.onEvent(ev, world, controlledId)
+    if (mission?.done && !missionDoneNotified) { missionDoneNotified = true; o.onMissionDone?.() }
     sfx.play(ev)
     crowd?.onEvent(ev, world, cam.cx, cam.width)
     demoTutor?.onEvent(ev, now)
@@ -769,7 +790,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         controlledId = (o.demo || o.spectator) ? null : receiverLock ? receiverLock.id : selectControlled(world, 0, controlledId)
         const twoHumans = !!netHost && netHost.guestJoined
         guestCtl = twoHumans ? selectControlled(world, 1, guestCtl) : null
-        if (o.training) ai.update(world, controlledId, fixed, [0]) // en entrenamiento, solo los compañeros (lado 0) se mueven solos — no hay rival de verdad
+        if (o.training) ai.update(world, controlledId, fixed, o.training.scrimmage ? [0, 1] : [0]) // en entrenamiento, solo los compañeros (lado 0) se mueven solos — no hay rival de verdad (salvo `scrimmage`, la misión 6)
         else if (twoHumans) { ai.update(world, controlledId, fixed, [0]); ai.update(world, guestCtl, fixed, [1]) } // 2P: la IA solo mueve a los compañeros de cada humano
         else ai.update(world, controlledId, fixed)
         if (controlledId) {
@@ -791,6 +812,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
         stepWorld(world, fixed)
         stepsThisFrame++
         stats.steps++
+        mission?.tick(world, fixed)
         if (world.puck.superShot && !world.puck.carrierId) superTrail.mark(world.puck.x, world.puck.y, now)
         if (world.phase === "play" || world.phase === "timeOn") replayBuf.push(world)
         if (world.events.length) {

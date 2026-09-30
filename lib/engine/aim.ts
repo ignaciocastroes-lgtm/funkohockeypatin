@@ -110,7 +110,12 @@ export function bestPassTarget(w: World, shooterId: string): string | null {
       const d = Math.hypot(o.x - (s.x + dx * t2), o.y - (s.y + dy * t2))
       if (d < 1.4) { open = 0; break }
     }
-    const score = align * 6 + open * 8 - Math.abs(dist - 12) * 0.25
+    // Antes esto penalizaba por igual estar CERCA o LEJOS de 12 m — un compañero pedido de
+    // verdad (el armador ofreciéndose a 4-7 m, ver `TeamAI` en ai.ts) perdía casi siempre contra
+    // cualquiera más lejos, aunque estuviera bien tapado: nunca prendía el aro verde de "pase acá".
+    // Ahora solo se castiga estar DEMASIADO lejos (pase largo, más riesgo) o pegado al cuerpo
+    // (menos de 5 m, casi sin ángulo); un compañero cercano y abierto de verdad puntúa alto.
+    const score = align * 6 + open * 8 - Math.max(0, dist - 14) * 0.4 - Math.max(0, 5 - dist) * 0.3
     if (score > bestScore) { bestScore = score; best = t.id }
   }
   return best

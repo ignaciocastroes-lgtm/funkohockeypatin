@@ -16,7 +16,9 @@ import type { Side, Skater, World } from "./types"
  */
 
 export interface AIOptions {
-  /** Habilidad por equipo, 0 (torpe) a 1 (afinado). [local, visita] */
+  /** Ritmo por equipo, 0 (lento) a 1 (a fondo). [local, visita]. A propósito NO es "inteligencia":
+   *  la lectura de juego (pases, marca, cuándo tirar) es siempre la mejor posible en cualquier
+   *  valor — lo único que este número mueve es la velocidad de patinada y de tiro. */
   skill?: [number, number]
   seed?: number
 }
@@ -108,6 +110,11 @@ export class TeamAI {
 
   // ------------------------------------------------------------------
   private updateSide(w: World, side: Side, humanId: string | null, carrier: Skater | undefined, dt: number) {
+    // `skill` es, a propósito, el ÚNICO eje de dificultad: pura velocidad de patinada (ver
+    // `speedMul` abajo). La lectura de juego — a quién pasarle, cómo abrirse, cuándo tirar — es
+    // "nivel Dios" en cualquier dificultad; eso ya no depende de `skill` en ningún lado de este
+    // archivo (ver `carry()`). Pedido explícito: la diferencia se siente en el ritmo, no en que
+    // el rival juegue "más tonto".
     const skill = this.skill[side]
     const team = w.skaters.filter((s) => s.side === side)
     const opp = w.skaters.filter((s) => s.side !== side)
@@ -118,7 +125,11 @@ export class TeamAI {
     const own = GOALS[side]
     const p = w.puck
     const puckF = (p.x - own.lineX) * u
-    const speedMul = 0.8 + 0.2 * skill
+    // Único eje de dificultad para los patinadores: ritmo de patinada. Ancla en skill=0.7 (el
+    // fallback de `TeamAI` sin configurar) al mismo ritmo de siempre, y abre bastante el rango
+    // hacia los extremos — con la lectura de juego ya pareja, toda la sensación de dificultad
+    // tiene que salir de acá.
+    const speedMul = 0.53 + 0.58 * clamp(skill, 0, 1)
 
     for (const s of team) {
       const mm = this.m(s.id)
@@ -217,8 +228,32 @@ export class TeamAI {
           ahead = 8 + (s.kind === "veloz" ? 2 : 0)
           wing++
         } else if (idx === 1) {
-          laneBase = RINK.width * 0.5 + (opposite ? 5 : -5)
-          ahead = 3
+          // El armador: se ofrece CERCA del portador a una distancia FIJA (nunca el carril ancho de
+          // mitad de cancha que usaba antes) — así, aunque haya rival encima, siempre hay "a quién"
+          // dársela de una. Fija para CUALQUIER dificultad a propósito: esto es lectura de juego,
+          // no velocidad — el pedido de la pelota siempre es "nivel Dios".
+          const near = 4
+          const angle0 = u > 0 ? 0 : Math.PI
+          let bestSpot = { x: clamp(carrier.x + u * near, 4, RINK.length - 4), y: clamp(carrier.y, 2.5, RINK.width - 2.5) }
+          let bestScore = -Infinity
+          for (const da of [-1.1, -0.7, -0.35, 0, 0.35, 0.7, 1.1]) {
+            const ang = angle0 + da
+            const x = clamp(carrier.x + Math.cos(ang) * near, 4, RINK.length - 4)
+            const y = clamp(carrier.y + Math.sin(ang) * near, 2.5, RINK.width - 2.5)
+            let lane = 3
+            let free = 5
+            for (const o of opp) {
+              lane = Math.min(lane, distToSegment(o.x, o.y, carrier.x, carrier.y, x, y))
+              free = Math.min(free, Math.hypot(o.x - x, o.y - y))
+            }
+            let crowd = 0
+            for (const c of claimed) if (Math.hypot(c.x - x, c.y - y) < 3) crowd += 2
+            const score = lane * 2 + free - crowd
+            if (score > bestScore) { bestScore = score; bestSpot = { x, y } }
+          }
+          claimed.push(bestSpot)
+          this.moveTo(w, s, bestSpot.x, bestSpot.y, speedMul, team, true)
+          return
         } else {
           laneBase = RINK.width * 0.5 + (opposite ? -4 : 4)
           ahead = s.kind === "pesado" ? 0 : 2
@@ -325,12 +360,16 @@ export class TeamAI {
   }
 
   // ------------------------------------------------------------------
+  /** `skill` acá SOLO marca ritmo de patinada y potencia de tiro (ver los `speed` de abajo) — la
+   *  lectura de la jugada (cuándo tira, a quién le pasa, qué tan lejos arriesga un súper tiro) es
+   *  siempre "nivel Dios", pareja para cualquier dificultad. Antes esto también aflojaba la
+   *  puntería y las chances de intentar un súper tiro en Fácil — se sacó a propósito. */
   private carry(w: World, s: Skater, opp: Skater[], team: Skater[], skill: number, _dt: number) {
     const side = s.side
     const u = side === 0 ? 1 : -1
     const goal = GOALS[side === 0 ? 1 : 0]
     const mm = this.m(s.id)
-    const think = 0.55 - 0.4 * skill
+    const think = 0.15
     const dGoal = Math.hypot(goal.lineX - s.x, goal.cy - s.y)
     const facingGoal = (goal.lineX - s.x) * u > 1
 
@@ -345,7 +384,7 @@ export class TeamAI {
       // punta (o directo a un compañero parado en el segundo palo, que cuenta como despejado
       // porque `clear` solo mira rivales — si la desvía, es gol). Nada de bypass ni garantía: el
       // arquero hace lo que puede, la velocidad real decide.
-      const closeRange = 10 + 6 * skill
+      const closeRange = 16
       const bombRange = 30
       if (facingGoal && dGoal <= bombRange) {
         const g = w.goalies.find((q) => q.side === goal.side)
@@ -356,15 +395,14 @@ export class TeamAI {
         for (const o of opp) if (distToSegment(o.x, o.y, s.x, s.y, goal.lineX, ty) < 0.85) { clear = false; break }
         const inClose = dGoal <= closeRange
         if (inClose && (clear || pressure < 1.6)) {
-          const err = (this.rnd() - 0.5) * 2 * 0.12 * (1 - skill)
+          const err = (this.rnd() - 0.5) * 2 * 0.02
           // BUG real que encontré acá antes: siempre se pateaba a 24-28 m/s, que es justo el piso
           // del "súper tiro" (`STAMINA.superShotMinSpeed`) — CUALQUIER remate de cerca terminaba
           // siendo un súper tiro. Ahora el de cerca es un tiro de poder normal (más floja cuanto
           // más lejos, dentro de esta zona), y de vez en cuando, si hay margen y tanque, carga el
           // súper tiro de cerca también.
           const near = clamp(1 - dGoal / closeRange, 0, 1) // 1 = pegado al arco, 0 = borde de esta zona
-          const wantsSuper = near > 0.6 && clear && s.stamina >= SUPER_SHOT_COST + 15
-            && this.rnd() < 0.1 + 0.2 * skill
+          const wantsSuper = near > 0.6 && clear && s.stamina >= SUPER_SHOT_COST + 15 && this.rnd() < 0.3
           const speed = wantsSuper
             ? STAMINA.superShotMinSpeed + 2 + 3 * skill
             : 12 + 6 * near + 3 * skill // 12..21 m/s: potente y realista, pero el arquero tiene chance
@@ -374,9 +412,10 @@ export class TeamAI {
         }
         // El supertiro de larga distancia: solo con el arco de verdad libre (ni un rival cortando
         // la línea) y solo si hay tanque para cargarlo — como el humano, gasta la mitad de la
-        // energía. La chance sube con el nivel del jugador: esto lo hacen "los mejores", no cualquiera.
-        if (!inClose && clear && s.stamina >= SUPER_SHOT_COST && this.rnd() < 0.05 + 0.35 * skill) {
-          const err = (this.rnd() - 0.5) * 2 * 0.08 * (1 - skill)
+        // energía. La chance de intentarlo es la misma para cualquier nivel (siempre "los mejores");
+        // lo único que cambia con `skill` es qué tan fuerte sale, no si se anima a probarlo.
+        if (!inClose && clear && s.stamina >= SUPER_SHOT_COST && this.rnd() < 0.4) {
+          const err = (this.rnd() - 0.5) * 2 * 0.015
           kick(w, s.id, Math.atan2(ty - s.y, goal.lineX - s.x) + err, STAMINA.superShotMinSpeed + 2 + 6 * skill)
           mm.carryTime = 0
           return
@@ -407,7 +446,7 @@ export class TeamAI {
           const flight = Math.min(0.8, dist / 14)
           const tx = best.x + best.vx * flight
           const ty = best.y + best.vy * flight
-          const err = (this.rnd() - 0.5) * 2 * 0.06 * (1 - skill)
+          const err = (this.rnd() - 0.5) * 2 * 0.01
           kick(w, s.id, Math.atan2(ty - s.y, tx - s.x) + err, passSpeedFor(dist))
           mm.carryTime = 0
           return
@@ -438,7 +477,7 @@ export class TeamAI {
     if (s.y > RINK.width - 2.2) dy -= 0.8
     if ((s.x - own(side).lineX) * u < 2.5) dx += u * 0.6
     const m = Math.hypot(dx, dy) || 1
-    const speedMul = 0.8 + 0.2 * skill
+    const speedMul = 0.53 + 0.58 * clamp(skill, 0, 1)
     setInput(w, s.id, (dx / m) * speedMul, (dy / m) * speedMul)
   }
 }

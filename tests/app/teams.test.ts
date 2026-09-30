@@ -104,7 +104,7 @@ test("storage: JSON roto, tipos raros o storage nulo => valores por defecto, sin
   s.setItem(STORAGE_KEY, JSON.stringify({ customTeams: "x", settings: { nivel: 7, duration: 99999, localId: 5 } }))
   const l = load(s)
   assert.equal(l.customTeams.length, 0)
-  assert.equal(l.settings.nivel, "normal")
+  assert.equal(l.settings.nivel, "facil")
   assert.equal(l.settings.duration, 120)
   assert.deepEqual(load(null).settings, DEFAULT_SETTINGS)
   assert.equal(save({ customTeams: [], settings: DEFAULT_SETTINGS, cup: null }, null), false)

@@ -48,7 +48,13 @@ export interface Goalie {
   lastShotAngle: number | null
   /** Segundos que lleva la bocha quieta pegada al arquero (para el despeje automático). */
   holdTimer?: number
+  /** true en el paso donde el arquero ya reaccionó a un tiro real y está defendiéndolo — habilita
+   *  la "estirada" (`GOALIE.diveReach`) en la colisión de ese mismo paso. Se recalcula cada paso. */
+  diving?: boolean
 }
+
+/** Ritmo de arquero por lado (0 lento .. 1 a fondo) — ver `WorldConfig.goalieSkill`. */
+export type GoalieSkill = [number, number]
 
 export interface Puck {
   x: number; y: number; vx: number; vy: number
@@ -110,6 +116,11 @@ export interface WorldConfig {
    *  pesada = más lenta y previsible (para aprender); más liviana = más rápida y rebota más
    *  (exige más precisión). Ver `PUCK_KINDS`. */
   puckKind?: PuckKind
+  /** Ritmo del arquero por lado [local, visita] (0 lento .. 1 a fondo) — mismo eje que el `skill`
+   *  de `TeamAI`: pura velocidad de movimiento (cuánto corre para cerrar el ángulo, cuánto se
+   *  mueve lateral). NO cambia la técnica — reacción, standoff, estirada — que es "nivel Dios"
+   *  parejo para cualquier valor. Por defecto 0.7 en los dos lados (ritmo original, sin throttle). */
+  goalieSkill?: [number, number]
 }
 
 export interface BenchEntry {
@@ -167,4 +178,6 @@ export interface World {
   /** Penal en curso: mientras dure, el arquero se queda parado en la línea (no puede adelantarse a
    *  cerrar el ángulo, como en un penal de verdad) — se apaga solo en el próximo saque normal. */
   penaltyActive: boolean
+  /** Oficio de arquero por lado — ver `WorldConfig.goalieSkill`. */
+  goalieSkill: GoalieSkill
 }

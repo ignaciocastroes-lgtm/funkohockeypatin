@@ -208,6 +208,47 @@ test("defendiendo: cubre más de cerca al rival peligroso cerca del arco que al 
   assert.ok(closeGap < farGap, `debería cubrirlo más de cerca cuanto más cerca del arco está (cerca ${closeGap.toFixed(1)}, lejos ${farGap.toFixed(1)})`)
 })
 
+test("con el humano manejando la bola, un compañero siempre se ofrece cerca (< 8 m), en cualquier nivel", () => {
+  // Regresión del audit de Ronda 56/57: antes el armador (idx 1) se paraba a un carril de mitad de
+  // cancha (podía quedar a 15+ m). Ahora busca una distancia FIJA y corta al portador — fija a
+  // propósito para CUALQUIER dificultad: pedir la bola es lectura de juego ("nivel Dios" siempre),
+  // no velocidad. La única diferencia entre niveles es el ritmo, nunca esto.
+  const w = makeWorld({ teamSize: 4 })
+  const l1 = place(w, "L1", 12, 10)
+  l1.pickupCooldown = 0
+  shootPuck(w, 12.8, 10, 0, 0)
+  place(w, "V1", 20, 9); place(w, "V2", 22, 12); place(w, "V3", 28, 6); place(w, "V4", 30, 14)
+  const ai = new TeamAI({ seed: 9, skill: [0.3, 0.3] })
+  playAI(w, ai, 0.05, "L1")
+  assert.equal(w.puck.carrierId, "L1")
+  // el rival no se mueve: se aísla el reposicionamiento de los compañeros, como en el test de arriba
+  playAI(w, ai, 3, "L1", (ww) => { for (const s of ww.skaters) if (s.side === 1) { s.vx = 0; s.vy = 0; s.inputX = 0; s.inputY = 0 } })
+  const mates = w.skaters.filter((s) => s.side === 0 && s.id !== "L1")
+  const nearest = Math.min(...mates.map((m) => Math.hypot(m.x - l1.x, m.y - l1.y)))
+  assert.ok(nearest < 8, `nadie se ofrece cerca del portador: el más cercano quedó a ${nearest.toFixed(1)} m`)
+})
+
+test("la lectura de juego es 'nivel Dios' en cualquier nivel: la única diferencia es la velocidad del tiro", () => {
+  // Pedido explícito: Fácil y Difícil tienen que decidir EXACTAMENTE lo mismo (mismo momento,
+  // mismo tiro) — lo único que puede cambiar entre niveles es qué tan fuerte sale.
+  function shotSpeedAt(skill: number): number | undefined {
+    const w = makeWorld({ teamSize: 4 })
+    parkOthers(w, ["L1"])
+    const s = place(w, "L1", 29, 10)
+    s.pickupCooldown = 0
+    shootPuck(w, 29.8, 10, 0, 0)
+    const ai = new TeamAI({ seed: 3, skill: [skill, skill] })
+    const ev = playAI(w, ai, 2, null)
+    const k = ev.find((e) => e.type === "kick" && e.id === "L1")
+    return k && k.type === "kick" ? k.speed : undefined
+  }
+  const weak = shotSpeedAt(0.2)
+  const strong = shotSpeedAt(0.9)
+  assert.ok(weak !== undefined, "debía tirar con nivel bajo")
+  assert.ok(strong !== undefined, "debía tirar con nivel alto")
+  assert.ok(strong! > weak!, `el tiro en Difícil debería salir más rápido, no más 'vivo' (Fácil ${weak!.toFixed(1)} m/s, Difícil ${strong!.toFixed(1)} m/s)`)
+})
+
 test("modo demo: IA vs IA sin humano (humanId null) llega a anotar goles de verdad", () => {
   let totalGoals = 0
   for (const seed of [11, 12, 13]) {

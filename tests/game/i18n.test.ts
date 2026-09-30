@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { PT, RULES, detectLang, isLang, localizeDom, setLang, getLang, tr } from "../../lib/game/i18n"
 
-const src = ["lib/app/app.ts", "lib/game/match.ts", "lib/game/draw.ts", "lib/game/demo-tutor.ts", "lib/app/teams.ts"]
+const src = ["lib/app/app.ts", "lib/game/match.ts", "lib/game/draw.ts", "lib/game/demo-tutor.ts", "lib/app/teams.ts", "lib/game/missions.ts"]
   .map((f) => readFileSync(f, "utf8")).join("\n")
 
 test("idiomas: en español todo queda igual (el texto original ES la clave)", () => {

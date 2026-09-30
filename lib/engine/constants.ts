@@ -180,10 +180,13 @@ export const GOALIE = {
   shotSpeed: 6,
   /** Recorrido lateral máximo del centro del portero desde el centro de la boca (m). */
   range: 0.75,
-  /** Distancia de la línea de gol hacia el interior de la pista donde se para por defecto. */
-  standoff: 0.85,
+  /** Distancia de la línea de gol hacia el interior de la pista donde se para por defecto.
+   *  Bajado a propósito (era 0.85): un arquero que vive casi un metro afuera deja de cubrir
+   *  ángulo real y se convierte en un disco esperando en el medio de la cancha. Más cerca de
+   *  la línea = más cuerpo entre el palo y el arco en la posición de espera. */
+  standoff: 0.65,
   /** Cuánto más puede salir (además del standoff) a cerrarle el ángulo a un atacante que se acerca (m). */
-  advanceMax: 0.55,
+  advanceMax: 0.45,
   /** Distancia (m) del puck a la línea desde la que el portero empieza a adelantarse. */
   advanceRange: 9,
   /** Velocidad (m/s) con la que el portero avanza/retrocede en su eje de profundidad. */
@@ -204,6 +207,25 @@ export const GOALIE = {
   deflectionDelay: 0.09,
   /** Cuánto tiene que cambiar el ángulo de vuelo (rad) para contar como un desvío real y no ruido. */
   deflectionAngle: 0.45,
+  /**
+   * "Estirada": mientras el arquero está defendiendo un tiro de verdad que YA vio (reaccionó), su
+   * cuerpo cubre más que el círculo del dibujo — palo, pads, mariposa — en la dirección lateral del
+   * arco (m, se SUMA al radio ahí; la profundidad no cambia). Solo se activa con un tiro entrando
+   * de verdad (`shotSpeed`), nunca con la bocha quieta o llevada: no es un imán, es el cuerpo
+   * ocupando volumen en el instante de la atajada.
+   * Historia de este número (para que no se vuelva a bajar "para que pase un test" sin leer esto):
+   * la Ronda 56 lo puso en 0.22 y una auditoría posterior lo bajó a 0.05 porque a 0.22 el test de
+   * "tiros fuertes a la esquina" caía de 15-75% a 7% de gol. Eso ARREGLABA el test pero volvía a
+   * mentir: en pantalla el arquero se estira igual (el dibujo en `draw.ts` alarga el cuerpo ~1.1×
+   * el radio), pero el hitbox real casi no crecía — "si solo es canvas, es mentira". La Ronda 60
+   * lo subió a este valor (bien menos que el 1.1× que muestra el dibujo — eso incluye el guante y
+   * la pierna, que estiran mucho más que el cuerpo; esto es solo el TRONCO) y en cambio ACEPTÓ que
+   * el test viejo tenía que cambiar: un arquero que de verdad ocupa más lugar ataja más esquinas,
+   * eso es lo esperado, no un bug. El nuevo rango del test (documentado ahí mismo) es 5-30%: la
+   * esquina bien puesta sigue pudiendo ganarle, bastante menos seguido que antes de este archivo
+   * existir. NO bajar este número para hacer pasar un test sin antes revisar si el test es el que
+   * quedó desactualizado. */
+  diveReach: 0.35,
 } as const
 
 /**

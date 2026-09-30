@@ -19,6 +19,8 @@ import {
 import type { Category, Team, TeamDraft } from "./teams"
 import { newCup, nextMatch, recordResult } from "./cup"
 import type { Cup, MatchSlot } from "./cup"
+import { MISSIONS, missionsCompletedCount, nextMission } from "../game/missions"
+import type { MissionDef } from "../game/missions"
 import type { SkaterKind, PuckKind, Surface } from "../engine"
 
 /**
@@ -794,7 +796,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
   let demoPlaying = false
   let demoFromBoot = false
   /** Config del entrenamiento en curso (para "reiniciar" desde la pausa), si hay uno. */
-  let trainingPlaying: { goalie: "local" | "visita" | "ninguno"; penalties?: boolean; puckKind?: PuckKind } | null = null
+  let trainingPlaying: { goalie: "local" | "visita" | "ninguno" | "ambos"; penalties?: boolean; puckKind?: PuckKind; mission?: MissionDef } | null = null
   function startDemo(fromBoot = false) {
     stopMatch()
     demoPlaying = true
@@ -937,6 +939,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
 
   function trainingScreen(): HTMLElement {
     const lvl = TRAINING_LEVELS.find((l) => l.value === trainingLevel) ?? TRAINING_LEVELS[0]
+    const doneCount = missionsCompletedCount(saved.settings.missionsDone)
     return h("main", { class: "fp-screen fp-scroll" }, h("div", { class: "fp-col" },
       topBar("ENTRENAMIENTO", "#9ca3af", () => go("menu")),
       h("section", { class: "fp-panel" },
@@ -950,6 +953,28 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
         trainingVenue === "cantoni"
           ? h("p", { class: "fp-note" }, "El Cantoni tiene piso de parquet (madera) real — se juega con esa pista, sin importar lo que elijas arriba.")
           : null,
+      ),
+      h("section", { class: "fp-panel" },
+        h("h3", {}, "Misiones"),
+        h("p", { class: "fp-note" }, "Una hoja de práctica de club: cada misión enseña un oficio de verdad y desbloquea la siguiente. No hace falta elegir nivel — cada una ya trae su propio escenario."),
+        h("div", { class: "fp-col", style: "gap:8px" },
+          ...MISSIONS.map((def, i) => {
+            const isDone = i < doneCount
+            const isNext = i === doneCount
+            const locked = i > doneCount
+            return h("div", { class: "fp-panel", style: `padding:10px${locked ? ";opacity:.55" : ""}` },
+              h("div", { style: "display:flex;justify-content:space-between;align-items:center;gap:10px" },
+                h("strong", { style: "font-size:13px" }, isDone ? "✅ " : locked ? "🔒 " : "🎯 ", def.title),
+                isNext
+                  ? h("button", { class: "fp-btn solid", style: "min-height:34px;padding:6px 14px;font-size:12px", "data-key": `mission-${def.id}`, onclick: () => startMission(def) }, "Jugar")
+                  : isDone
+                    ? h("button", { class: "fp-btn gr", style: "min-height:34px;padding:6px 14px;font-size:12px", "data-key": `mission-replay-${def.id}`, onclick: () => startMission(def) }, "Repetir")
+                    : null,
+              ),
+              h("p", { class: "fp-note", style: "margin-top:4px" }, def.goal),
+            )
+          }),
+        ),
       ),
       h("section", { class: "fp-panel" },
         h("p", { class: "fp-note" }, "Practicá tiros solo, sin rival. Elegí el nivel: cada uno suma arquero y una bocha distinta."),
@@ -969,7 +994,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     ))
   }
 
-  function startTraining(goalie: "local" | "visita" | "ninguno", penalties = false, puckKind: PuckKind = "normal") {
+  function startTraining(goalie: "local" | "visita" | "ninguno" | "ambos", penalties = false, puckKind: PuckKind = "normal") {
     stopMatch()
     maybeAutoFullscreen()
     trainingPlaying = { goalie, penalties, puckKind }
@@ -990,6 +1015,52 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
     })
     match = m
     wrap.append(matchHudBar(wrap, m))
+  }
+
+  /** Misión de entrenamiento: mismo partido de práctica que `startTraining`, pero con el escenario
+   *  fijo de la misión (no el selector Básico/Medio/Experto), un cartel fijo arriba con el objetivo,
+   *  y un diálogo al lograrla (guarda el progreso al toque — antes de preguntar nada más). */
+  function startMission(def: MissionDef) {
+    stopMatch()
+    maybeAutoFullscreen()
+    trainingPlaying = { goalie: def.scenario.goalie, mission: def }
+    screen = "match"
+    const wrap = h("div", { class: "fp-match" })
+    view.replaceChildren(wrap)
+    const mo = matchOptions()
+    const cantoni = saved.settings.cantoniUnlocked && trainingVenue === "cantoni"
+    const m = mountMatch(wrap, {
+      ...mo,
+      surface: cantoni ? "madera" : trainingSurface,
+      venue: cantoni ? "cantoni" : "generic",
+      puckKind: "normal",
+      duration: 600,
+      // Misión 6 ("partido de verdad"): rival Fácil a propósito — es la primera vez que juega
+      // contra alguien que se mueve de verdad, no hace falta que además sea difícil.
+      aiSkill: def.scenario.scrimmage ? [1, 0.3] : undefined,
+      training: { goalie: def.scenario.goalie, scrimmage: def.scenario.scrimmage, mission: def },
+      onMissionDone: () => {
+        if (!saved.settings.missionsDone.includes(def.id)) { saved.settings.missionsDone.push(def.id); persist() }
+        showMissionDoneDialog(wrap, def)
+      },
+      onEnd: () => { stopMatch(); go("training") },
+      onAutoPause: () => showPause(wrap),
+    })
+    match = m
+    wrap.append(matchHudBar(wrap, m))
+    wrap.append(h("div", { class: "fp-mission" }, h("div", { class: "fp-mission-pill" }, "🎯 ", def.goal)))
+  }
+
+  function showMissionDoneDialog(wrap: HTMLElement, def: MissionDef) {
+    if (!match) return
+    match.pause()
+    const upcoming = nextMission(saved.settings.missionsDone)
+    showDialog("¡MISIÓN LOGRADA!", def.doneText, [
+      { label: "Seguir practicando", onClick: () => match?.resume() },
+      upcoming
+        ? { label: `Siguiente: ${upcoming.title}`, primary: true, onClick: () => startMission(upcoming) }
+        : { label: "Volver a entrenamiento", primary: true, onClick: () => { stopMatch(); go("training") } },
+    ], wrap)
   }
 
   // ---------- copa ----------

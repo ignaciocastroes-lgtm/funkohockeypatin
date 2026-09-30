@@ -6,6 +6,7 @@ import { DEFAULT_TEAMS, MAX_CUSTOM_TEAMS, sanitizeTeam } from "./teams"
 import type { Team } from "./teams"
 import { sanitizeCup } from "./cup"
 import type { Cup } from "./cup"
+import { MISSIONS } from "../game/missions"
 
 export const STORAGE_KEY = "funko-patin:v1"
 export const DURATIONS = [60, 120, 180, 300] as const
@@ -41,6 +42,9 @@ export interface Settings {
   cantoniUnlocked: boolean
   /** Idioma elegido a mano. Sin esto (undefined) se usa el del navegador. */
   lang?: Lang
+  /** Ids de misiones de entrenamiento logradas, en orden (ver `lib/game/missions.ts`). La próxima
+   *  a jugar es la primera de la lista que no esté acá. */
+  missionsDone: string[]
 }
 
 export interface Saved {
@@ -51,7 +55,10 @@ export interface Saved {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  nivel: "normal",
+  // Fácil por defecto: quien abre el juego por primera vez (o alguien recién empezando, como el
+  // caso que motivó todo este rediseño) tiene que entrar a un partido jugable, no a "Normal" —
+  // "Normal" es una elección informada, no el piso de entrada.
+  nivel: "facil",
   duration: 120,
   localId: DEFAULT_TEAMS[0].id,
   visitId: DEFAULT_TEAMS[1].id,
@@ -59,11 +66,17 @@ export const DEFAULT_SETTINGS: Settings = {
   sound: true,
   music: "on",
   tutorialOptOut: false,
-  trainingUnlocked: false,
+  /** Antes esto vivía atrás de un gesto secreto (toques en el logo) o de ganar la Copa. Se
+   *  desbloquea desde el arranque a propósito: el camino de misiones (ver `lib/game/missions.ts`)
+   *  es justamente la puerta de entrada para quien recién empieza — no tiene sentido escondérsela
+   *  detrás de la Copa. El gesto secreto sigue vivo (ver `unlockTraining`/`logoBrand` en app.ts)
+   *  como curiosidad, pero ya no hace falta usarlo. */
+  trainingUnlocked: true,
   godModeUnlocked: false,
   puckKind: "normal",
   graphicsSaver: false,
   cantoniUnlocked: false,
+  missionsDone: [],
 }
 
 /** Prueba si `candidate` (localStorage o sessionStorage) existe y de verdad deja escribir —
@@ -122,7 +135,7 @@ export function normalize(saved: Saved): Saved {
 /** Lee lo guardado. Nunca lanza: ante cualquier dato roto vuelve a los valores por defecto (avisa
  *  por consola, para poder diagnosticarlo — antes fallaba en silencio). */
 export function load(storage: Storage | null = safeStorage()): Saved {
-  const fresh = (): Saved => ({ customTeams: [], settings: { ...DEFAULT_SETTINGS }, cup: null })
+  const fresh = (): Saved => ({ customTeams: [], settings: { ...DEFAULT_SETTINGS, missionsDone: [] }, cup: null })
   if (!storage) return fresh()
   try {
     const raw = storage.getItem(STORAGE_KEY)
@@ -160,6 +173,13 @@ export function load(storage: Storage | null = safeStorage()): Saved {
     if (s.puckKind === "liviana" || s.puckKind === "normal" || s.puckKind === "pesada") out.settings.puckKind = s.puckKind
     if (typeof s.graphicsSaver === "boolean") out.settings.graphicsSaver = s.graphicsSaver
     if (typeof s.cantoniUnlocked === "boolean") out.settings.cantoniUnlocked = s.cantoniUnlocked
+    if (Array.isArray(s.missionsDone)) {
+      const validIds = new Set(MISSIONS.map((m) => m.id))
+      const seenM = new Set<string>()
+      for (const id of s.missionsDone) {
+        if (typeof id === "string" && validIds.has(id) && !seenM.has(id)) { seenM.add(id); out.settings.missionsDone.push(id) }
+      }
+    }
     if (isLang(s.lang)) out.settings.lang = s.lang
     out.cup = sanitizeCup(data.cup, seen)
     return normalize(out)

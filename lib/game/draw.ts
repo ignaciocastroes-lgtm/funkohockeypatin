@@ -1062,87 +1062,128 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     }
     ctx.save()
     ctx.translate(gx, gy)
-    // Piernas: antes el arquero no las tenía dibujadas (solo el palo se movía para atajar). Un
-    // arquero de hockey patín SÍ patea para cerrar el ángulo abajo — dos pies quietos en reposo;
-    // recién atajada de por medio (`o.goalieSave`, con el lado hacia donde entró el tiro en `ny`),
-    // una pierna se estira hacia ese lado y vuelve sola. Sin estado nuevo en el motor: la ventana
-    // de animación (`GOALIE_KICK_MS`) se mide contra el reloj, como el resto de los gestos de golpe.
-    {
-      const save = o.goalieSave?.[g.side]
-      const saveAgeMs = save ? performance.now() - save.startedAt : Infinity
-      // 0 → 1 → 0 a lo largo de la ventana: la pierna sale y vuelve, no se queda pegada afuera.
-      const kickAmt = saveAgeMs < GOALIE_KICK_MS ? Math.sin((saveAgeMs / GOALIE_KICK_MS) * Math.PI) : 0
-      const kickSide: 1 | -1 = (save?.ny ?? 0) >= 0 ? 1 : -1
-      const restY = g.radius * 0.55
-      const restX = -g.radius * 0.22
-      const feet: Array<[number, number]> =
-        kickAmt > 0.02
-          ? [
-              [restX + kickAmt * g.radius * 0.2, -restY * kickSide * (1 - kickAmt * 0.6)], // pivote
-              [restX - kickAmt * g.radius * 0.15, restY * kickSide + kickSide * kickAmt * g.radius * 1.7], // patada
-            ]
-          : [[restX, -restY], [restX, restY]]
-      ctx.fillStyle = "#27272a"
-      for (const [fx2, fy2] of feet) {
-        ctx.beginPath(); ctx.ellipse(fx2, fy2, g.radius * 0.24, g.radius * 0.15, 0, 0, Math.PI * 2); ctx.fill()
-      }
-      ctx.fillStyle = "#a1a1aa"
-      for (const [fx2, fy2] of feet) {
-        ctx.beginPath(); ctx.arc(fx2 - g.radius * 0.11, fy2, g.radius * 0.045, 0, Math.PI * 2); ctx.fill()
-        ctx.beginPath(); ctx.arc(fx2 + g.radius * 0.11, fy2, g.radius * 0.045, 0, Math.PI * 2); ctx.fill()
-      }
-    }
-    // sombra
-    ctx.fillStyle = "rgba(0,0,0,0.35)"
-    ctx.beginPath(); ctx.ellipse(0.05, 0.1, g.radius * 1.05, g.radius * 0.9, 0, 0, Math.PI * 2); ctx.fill()
+    const save = o.goalieSave?.[g.side]
+    const saveAgeMs = save ? performance.now() - save.startedAt : Infinity
+    // 0 → 1 → 0 a lo largo de la ventana: todo el cuerpo se tira y vuelve, no se queda pegado afuera.
+    const diveAmt = saveAgeMs < GOALIE_KICK_MS ? Math.sin((saveAgeMs / GOALIE_KICK_MS) * Math.PI) : 0
+    const diveSide: 1 | -1 = (save?.ny ?? 0) >= 0 ? 1 : -1
+    const R = g.radius
     // palo: el arquero de hockey patín también juega con stick, y es el MISMO reglamentario que el de los
     // jugadores (Art. 16.6 del Reglamento Técnico de World Skate: de 90 a 115 cm, madera o plástico, base
-    // plana, debe pasar por un aro de 5 cm — nada de la paleta ancha del hockey hielo). Se dibuja con el
-    // mismo largo que el de un patinador (~0.9 m desde la mano) y sigue a la pelota, apoyado en el piso.
-    // Solo dibujo: no cambia la física del arquero.
+    // plana, debe pasar por un aro de 5 cm — nada de la paleta ancha del hockey hielo). Sigue a la pelota
+    // en el mundo real (no acompaña la pose de la atajada): va FUERA del giro del cuerpo, a propósito.
     const sa = goalieStickAngle(facing, 0, 0, pxp - gx, pyp - gy)
     ctx.strokeStyle = "#8b5a2b"
     ctx.lineWidth = 0.1
     ctx.lineCap = "round"
     ctx.beginPath()
-    ctx.moveTo(Math.cos(sa) * g.radius * 0.5, Math.sin(sa) * g.radius * 0.5)
-    ctx.lineTo(Math.cos(sa) * (g.radius + 0.62), Math.sin(sa) * (g.radius + 0.62))
+    ctx.moveTo(Math.cos(sa) * R * 0.5, Math.sin(sa) * R * 0.5)
+    ctx.lineTo(Math.cos(sa) * (R + 0.62), Math.sin(sa) * (R + 0.62))
     ctx.stroke()
+    // Todo el cuerpo (piernas, tronco, brazo, casco) gira JUNTO, en el mismo eje: un solo gesto de
+    // tirarse al piso — antes la pierna vivía en un sistema de coordenadas y el tronco en otro
+    // (rotado), y terminaban sin alinear. `diveAmt`/`diveSide` son los mismos números para las dos
+    // piernas, el brazo y el tronco.
+    ctx.save()
+    ctx.rotate(diveSide * diveAmt * 0.5)
+    // sombra: se alarga con el cuerpo en la atajada (queda de costado sobre el piso, no parado)
+    ctx.fillStyle = "rgba(0,0,0,0.35)"
+    ctx.beginPath()
+    ctx.ellipse(0.05, 0.1, R * (1.05 - diveAmt * 0.15), R * (0.9 + diveAmt * 1.5), 0, 0, Math.PI * 2)
+    ctx.fill()
+    // Piernas: antes el arquero no las tenía dibujadas (solo el palo se movía para atajar). Un
+    // arquero de hockey patín SÍ patea para cerrar el ángulo abajo — dos pies quietos y bien
+    // separados en reposo (base ancha); en la atajada una pierna se dobla hacia el centro (pivote)
+    // y la OTRA se estira a fondo hacia el lado del tiro — con el MUSLO dibujado, no solo el pie
+    // flotando suelto, para que se lea como una patada de verdad y no una mancha aparte.
+    const pivotLen = R * (0.68 - diveAmt * 0.35)
+    const kickLen = R * (0.68 + diveAmt * 2.0)
+    const legs: Array<{ len: number; side: 1 | -1 }> = [
+      { len: pivotLen, side: diveSide === 1 ? -1 : 1 },
+      { len: kickLen, side: diveSide },
+    ]
+    ctx.strokeStyle = c
+    ctx.lineWidth = R * 0.34
+    ctx.lineCap = "round"
+    for (const { len, side } of legs) {
+      ctx.beginPath()
+      ctx.moveTo(0, side * R * 0.15)
+      ctx.lineTo(-R * 0.12, side * len)
+      ctx.stroke()
+    }
+    ctx.fillStyle = "#27272a"
+    for (const { len, side } of legs) {
+      ctx.beginPath(); ctx.ellipse(-R * 0.12, side * len, R * 0.24, R * 0.15, 0, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.fillStyle = "#a1a1aa"
+    for (const { len, side } of legs) {
+      ctx.beginPath(); ctx.arc(-R * 0.12 - R * 0.11, side * len, R * 0.045, 0, Math.PI * 2); ctx.fill()
+      ctx.beginPath(); ctx.arc(-R * 0.12 + R * 0.11, side * len, R * 0.045, 0, Math.PI * 2); ctx.fill()
+    }
+    // Cuerpo entero: el "mono porfiado" de base ancha y rodillas flexionadas (postura de espera)
+    // deja de ser un círculo rígido apenas sale la atajada — se estira de costado hacia el lado del
+    // tiro (torso alargado + inclinado, todo en el plano de la pista, ya que la cámara es cenital),
+    // como un arquero de verdad tirándose al piso.
+    const bodyRx = R * (1 - diveAmt * 0.3)
+    const bodyRy = R * (1 + diveAmt * 1.1)
     // peto/cuerpo (color de equipo, más voluminoso que un patinador: ya lo transmite el radio)
     ctx.fillStyle = c
-    ctx.beginPath(); ctx.arc(0, 0, g.radius, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(0, 0, bodyRx, bodyRy, 0, 0, Math.PI * 2); ctx.fill()
     ctx.strokeStyle = "rgba(0,0,0,0.6)"
     ctx.lineWidth = 0.06
-    ctx.beginPath(); ctx.arc(0, 0, g.radius, 0, Math.PI * 2); ctx.stroke()
-    // hombreras: dos almohadillas claras a los lados, para que se lea "equipado"
+    ctx.beginPath(); ctx.ellipse(0, 0, bodyRx, bodyRy, 0, 0, Math.PI * 2); ctx.stroke()
+    // hombreras: dos almohadillas claras a los lados, para que se lea "equipado" — se separan con
+    // el estiramiento, como el resto del cuerpo.
     ctx.fillStyle = "rgba(230,233,238,0.95)"
-    ctx.beginPath(); ctx.ellipse(0, -g.radius * 0.8, g.radius * 0.36, g.radius * 0.24, 0, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.ellipse(0, g.radius * 0.8, g.radius * 0.36, g.radius * 0.24, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(0, -bodyRy * 0.8, R * 0.36, R * 0.24, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(0, bodyRy * 0.8, R * 0.36, R * 0.24, 0, 0, Math.PI * 2); ctx.fill()
     ctx.strokeStyle = "rgba(0,0,0,0.35)"
     ctx.lineWidth = 0.03
     ctx.stroke()
+    // Brazo/guante: mismo criterio que la pierna — el ANTEBRAZO se dibuja (no solo la mano
+    // flotando). Sale del hombro del lado del tiro y llega más lejos que la pierna: la mano de
+    // verdad es la que llega a la esquina.
+    if (diveAmt > 0.02) {
+      const armLen = R * (0.5 + diveAmt * 1.9)
+      const shoulderY = diveSide * bodyRy * 0.75
+      const gx2 = -R * 0.1
+      const gy2 = diveSide * armLen
+      ctx.strokeStyle = "rgba(230,233,238,0.95)"
+      ctx.lineWidth = R * 0.26
+      ctx.lineCap = "round"
+      ctx.beginPath()
+      ctx.moveTo(0, shoulderY)
+      ctx.lineTo(gx2, gy2)
+      ctx.stroke()
+      ctx.fillStyle = "#e7eaef"
+      ctx.beginPath(); ctx.arc(gx2, gy2, R * 0.3, 0, Math.PI * 2); ctx.fill()
+      ctx.strokeStyle = "rgba(0,0,0,0.5)"
+      ctx.lineWidth = 0.035
+      ctx.stroke()
+    }
     // casco: cúpula rígida que cubre toda la cabeza, con rejilla/máscara al frente
     ctx.rotate(facing)
-    const hr = g.radius * 0.62
+    const hr = R * 0.62
     ctx.fillStyle = "#e7eaef"
-    ctx.beginPath(); ctx.arc(g.radius * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.arc(R * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
     ctx.strokeStyle = "rgba(0,0,0,0.55)"
     ctx.lineWidth = 0.045
     ctx.stroke()
     // banda de color del equipo en el casco
     ctx.strokeStyle = c
     ctx.lineWidth = hr * 0.28
-    ctx.beginPath(); ctx.arc(g.radius * 0.08, 0, hr * 0.78, Math.PI * 0.82, Math.PI * 1.18); ctx.stroke()
+    ctx.beginPath(); ctx.arc(R * 0.08, 0, hr * 0.78, Math.PI * 0.82, Math.PI * 1.18); ctx.stroke()
     // rejilla de la máscara sobre la cara
     ctx.strokeStyle = "rgba(20,20,20,0.7)"
     ctx.lineWidth = 0.035
     for (const t of [-0.5, 0, 0.5]) {
       ctx.beginPath()
-      ctx.moveTo(g.radius * 0.08 + hr * 0.1, hr * t)
-      ctx.lineTo(g.radius * 0.08 + hr * 0.98, hr * t)
+      ctx.moveTo(R * 0.08 + hr * 0.1, hr * t)
+      ctx.lineTo(R * 0.08 + hr * 0.98, hr * t)
       ctx.stroke()
     }
     ctx.rotate(-facing)
+    ctx.restore()
     if (w.defCombo && w.defCombo.side === g.side && w.defCombo.touches > 0) {
       // Defensa armándose (la atajada garantizada): el arquero es quien la cobra, el aro late en él.
       const t = w.defCombo.touches

@@ -200,6 +200,7 @@ export function createWorld(cfg: WorldConfig = {}): World {
     suddenDeath: false,
     nextKickoffSide: null,
     penaltyActive: false,
+    goalieSkill: cfg.goalieSkill ?? [0.7, 0.7],
   }
   placeKickoff(w)
   return w
@@ -554,6 +555,19 @@ function updateGoalies(w: World, dt: number) {
   for (const g of w.goalies) {
     const geom = GOALS[g.side]
     const limit = GOALIE.range
+    // Único eje de dificultad para el arquero: qué tan rápido se mueve el CUERPO (reflejos
+    // físicos). La TÉCNICA — cuándo reacciona, dónde para, cuánto cuerpo pone en la atajada — es
+    // la misma "nivel Dios" para cualquier dificultad; ver `GOALIE.reactionDelay`/`diveReach` más
+    // abajo, que ya NO dependen de `gSkill`. Esto es a propósito (pedido explícito): la diferencia
+    // entre Fácil/Normal/Difícil tiene que sentirse en el ritmo, nunca en que "juegue más tonto".
+    const gSkill = clamp(w.goalieSkill?.[g.side] ?? 0.7, 0, 1)
+    // Ancla en gSkill=0.7 (el fallback sin configurar) al ritmo ORIGINAL del arquero (paceMul=1),
+    // para no correr el piso de nadie que ya jugaba sin elegir dificultad — y se abre hacia los
+    // extremos desde ahí: más lento en Fácil, más rápido que el original en Difícil.
+    const paceMul = 0.65 + 0.5 * gSkill
+    const maxSpeed = GOALIE.maxSpeed * paceMul
+    const accel = GOALIE.accel * paceMul
+    const advanceSpeed = GOALIE.advanceSpeed * paceMul
 
     // Profundidad: por defecto vive a `standoff` de la línea, pero sale a cerrar el ángulo
     // (como un portero de verdad) cuando el atacante se acerca, hasta `advanceMax` de más.
@@ -564,7 +578,7 @@ function updateGoalies(w: World, dt: number) {
     const closeness = clamp(1 - distToLine / GOALIE.advanceRange, 0, 1)
     const targetStandoff = w.penaltyActive ? GOALIE.radius : GOALIE.standoff + closeness * GOALIE.advanceMax
     const targetX = geom.lineX - geom.dir * targetStandoff
-    const maxAdvStep = GOALIE.advanceSpeed * dt
+    const maxAdvStep = advanceSpeed * dt
     g.x += clamp(targetX - g.x, -maxAdvStep, maxAdvStep)
 
     // Por defecto NO sigue solo la Y del puck: se para sobre la línea imaginaria puck→centro
@@ -572,7 +586,8 @@ function updateGoalies(w: World, dt: number) {
     // arco se ve más chico desde donde está parado el atacante, no solo cuando tira de frente.
     const denom = geom.lineX - p.x
     let seenY = Math.abs(denom) > 1e-6 ? p.y + (geom.cy - p.y) * clamp((g.x - p.x) / denom, 0, 1) : geom.cy
-    // ...y cuando sale un disparo tarda un instante en reaccionar
+    // ...y cuando sale un disparo tarda un instante en reaccionar (SIEMPRE el mismo retardo: no es
+    // más "lento de mente" en Fácil, ve el tiro igual de rápido que en Difícil).
     const incoming = p.vx * geom.dir > GOALIE.shotSpeed && !p.carrierId
     if (incoming && !g.wasIncoming) {
       g.reactTimer = GOALIE.reactionDelay
@@ -589,6 +604,7 @@ function updateGoalies(w: World, dt: number) {
     g.wasIncoming = incoming
     g.lastShotAngle = incoming ? Math.atan2(p.vy, p.vx) : null
     if (g.reactTimer > 0) g.reactTimer -= dt
+    g.diving = incoming && g.reactTimer <= 0
     if (incoming && g.reactTimer <= 0) {
       const t = clamp((g.x - p.x) / p.vx, 0, 1.2)
       seenY = p.y + p.vy * t
@@ -596,9 +612,9 @@ function updateGoalies(w: World, dt: number) {
     // retardo de reacción: su puntería sigue a lo que ve con inercia
     g.aimY += (seenY - g.aimY) * kAim
     const targetY = clamp(g.aimY, geom.cy - limit, geom.cy + limit)
-    const desired = clamp((targetY - g.y) * 9, -GOALIE.maxSpeed, GOALIE.maxSpeed)
+    const desired = clamp((targetY - g.y) * 9, -maxSpeed, maxSpeed)
     const dv = desired - g.vy
-    const maxDelta = GOALIE.accel * dt
+    const maxDelta = accel * dt
     g.vy += clamp(dv, -maxDelta, maxDelta)
     g.y += g.vy * dt
     g.y = clamp(g.y, geom.cy - limit, geom.cy + limit)
@@ -925,8 +941,16 @@ function updatePuck(w: World, dt: number) {
       const min = g.radius + p.radius
       const dx = p.x - g.x
       const dy = p.y - g.y
+      // Estirada: si está atajando un tiro de verdad (ya reaccionó, `updateGoalies` lo marcó este
+      // mismo paso), el cuerpo cubre más ancho que el círculo del dibujo en el sentido del arco (Y)
+      // — palo, pads, mariposa. La profundidad (X) no cambia: esto no es un imán, un tiro con
+      // ángulo real hacia la esquina lejos de donde ya está parado lo sigue batiendo igual. SIEMPRE
+      // el mismo alcance (técnica pareja para cualquier dificultad — ver `updateGoalies`).
+      const diveReach = g.diving ? GOALIE.diveReach : 0
+      const minY = min + diveReach
+      const inReach = (dx * dx) / (min * min) + (dy * dy) / (minY * minY) <= 1
+      if (!inReach) continue
       const d = Math.hypot(dx, dy)
-      if (d >= min) continue
       // Golazo de combo: ya armó 3 toques y tira con fuerza — el arquero no lo frena en todo este vuelo
       // (se limpia en la próxima recogida, gol o saque, no en el primer roce: a esta velocidad el puck
       // puede tocar el radio del arquero en más de un sub-paso).

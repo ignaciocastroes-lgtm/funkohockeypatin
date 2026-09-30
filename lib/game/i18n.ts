@@ -277,6 +277,31 @@ export const PT: Record<string, string> = {
   // instalar
   "Tocá el ícono de compartir (el cuadradito con la flecha hacia arriba) y elegí «Agregar a inicio».": "Toca no ícone de partilha (o quadradinho com a seta para cima) e escolhe «Adicionar ao ecrã inicial».",
   "Abrí el menú del navegador (⋮ o ⋯) y elegí «Instalar app» o «Agregar a la pantalla de inicio».": "Abre o menu do navegador (⋮ ou ⋯) e escolhe «Instalar app» ou «Adicionar ao ecrã inicial».",
+  // entrenamiento: misiones
+  "Misiones": "Missões",
+  "Una hoja de práctica de club: cada misión enseña un oficio de verdad y desbloquea la siguiente. No hace falta elegir nivel — cada una ya trae su propio escenario.": "Uma folha de treino de clube: cada missão ensina um ofício a sério e desbloqueia a seguinte. Não é preciso escolher nível — cada uma já traz o seu próprio cenário.",
+  "Repetir": "Repetir",
+  "¡MISIÓN LOGRADA!": "MISSÃO CONSEGUIDA!",
+  "Seguir practicando": "Continuar a treinar",
+  "Volver a entrenamiento": "Voltar ao treino",
+  "1 · Recorrido": "1 · Percurso",
+  "Llevá la bocha de tu arco al arco rival sin perderla.": "Leva a bola da tua baliza até à baliza rival sem a perderes.",
+  "¡Eso es! Cruzaste toda la cancha sin que te la saquen.": "Isso mesmo! Atravessaste toda a pista sem que ta tirassem.",
+  "2 · Pase que llega": "2 · Passe que chega",
+  "Esperá a que un compañero se ofrezca cerca y dale un pase — que lo reciba de verdad.": "Espera que um companheiro se ofereça perto e dá-lhe um passe — que o receba mesmo.",
+  "¡Pase recibido! Así se juega en equipo.": "Passe recebido! Assim é que se joga em equipa.",
+  "3 · Pared": "3 · Parede",
+  "Dale un pase a un compañero y recibila de vuelta enseguida (uno-dos).": "Dá um passe a um companheiro e recebe-a de volta logo a seguir (um-dois).",
+  "¡Pared perfecta! Diste el pase y te desmarcaste para la devolución.": "Parede perfeita! Deste o passe e desmarcaste-te para a devolução.",
+  "4 · Ataque de 3 toques": "4 · Ataque de 3 toques",
+  "Encadená 3 toques de tu equipo y convertí con el combo ya armado.": "Encadeia 3 toques da tua equipa e marca com o combo já montado.",
+  "¡Golazo de combo! Tres toques limpios y a guardarla.": "Golaço de combo! Três toques limpos e a guardá-la.",
+  "5 · Definición": "5 · Definição",
+  "El arquero se tira: elegí bien el rincón y convertí.": "O guarda-redes atira-se: escolhe bem o canto e marca.",
+  "¡Se la metiste al arquero! Elegiste bien el palo.": "Meteste-a ao guarda-redes! Escolheste bem o poste.",
+  "6 · Partido de verdad": "6 · Jogo a sério",
+  "Con el rival presionando: abrite espacio y dale un pase ANTES de que te quiten la bocha.": "Com o rival a pressionar: abre espaço e dá um passe ANTES que te tirem a bola.",
+  "¡Jugada de verdad! Diste el pase justo antes del quite.": "Jogada a sério! Deste o passe mesmo antes do desarme.",
 }
 
 // ---------- reglas para textos con variables ----------
@@ -313,6 +338,7 @@ export const RULES: Rule[] = [
   [/^(.+) — combo (de ataque|defensivo) armado$/, (m) => `${m[1]} — combo ${m[2] === "de ataque" ? "de ataque" : "defensivo"} montado`],
   [/^Cambio (.+): sale (#\d+) · entra (#\d+)$/, (m) => `Substituição ${m[1]}: sai ${m[2]} · entra ${m[3]}`],
   [/^¡PENAL para (.+)!$/, (m) => `PENÁLTI para ${m[1]}!`],
+  [/^Siguiente: (.+)$/, (m, t) => `Seguinte: ${t(m[1])}`],
 ]
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)

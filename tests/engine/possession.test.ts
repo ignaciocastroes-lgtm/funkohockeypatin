@@ -189,10 +189,29 @@ test("portero: ataja lo de frente y lo flojo; solo un tiro fuerte y bien colocad
   assert.ok(debil.rate <= 0.05, `tiros flojos a la esquina: ${(debil.rate * 100).toFixed(0)}% gol`)
 
   const fuerte = goalieBatch(60, (r) => ({ sx: 27 + r() * 3, sy: 9 + r() * 2, ty: g.cy + (r() < 0.5 ? -0.9 : 0.9), sp: 24 + r() * 8 }))
-  // El arquero creció (GOALIE.radius 0.5->0.58, por el equipo) a propósito: tapa un poco más de
-  // esquina que antes. Sigue siendo baterle, solo que menos seguido — piso más bajo, no un cambio
-  // de diseño.
-  assert.ok(fuerte.rate >= 0.15 && fuerte.rate <= 0.75, `tiros fuertes a la esquina: ${(fuerte.rate * 100).toFixed(0)}% gol (esperado 15-75%)`)
+  // Ronda 60: el arquero ahora ocupa cuerpo de verdad en la atajada (`GOALIE.diveReach`, ver el
+  // comentario ahí — antes esto era ~1/6 de este valor solo para no tocar este número). Con el
+  // hitbox real, tapa bastantes más esquinas que antes: el rango baja de 15-75% a 5-30%. Sigue
+  // pudiendo perder (un tiro bien puesto todavía entra un 5-30% de las veces), solo que menos
+  // seguido — eso es la estirada funcionando, no una regresión.
+  assert.ok(fuerte.rate >= 0.05 && fuerte.rate <= 0.3, `tiros fuertes a la esquina: ${(fuerte.rate * 100).toFixed(0)}% gol (esperado 5-30%)`)
+})
+
+test("portero: un súper tiro bien puesto AL MEDIO (no a la esquina) sigue sin ser gol en juego abierto", () => {
+  // El audit de Ronda 56 ("arquero de cuerpo, no de disco"): un súper tiro al medio del arco nunca
+  // debería entrar solo porque el círculo del dibujo es chico — el cuerpo (estirada/mariposa,
+  // `GOALIE.diveReach`) tiene que cubrirlo, igual que ya lo hace un tiro de potencia normal.
+  const g = GOALS[1]
+  const superCentro = goalieBatch(60, (r) => ({ sx: 25 + r() * 6, sy: 9 + r() * 2, ty: g.cy + (r() * 0.5 - 0.25), sp: 24 + r() * 10 }))
+  assert.equal(superCentro.goals, 0, `un súper tiro al medio no debería entrar nunca (entraron ${superCentro.goals}/60)`)
+})
+
+test("portero: la posición de espera vive más cerca de la línea que antes (standoff bajo)", () => {
+  const w = createWorld({ teamSize: 1 })
+  const g = GOALS[1]
+  const expectedX = g.lineX - g.dir * GOALIE.standoff
+  assert.ok(Math.abs(w.goalies[1].x - expectedX) < 0.01, "el arquero no arranca en su standoff configurado")
+  assert.ok(GOALIE.standoff < 0.85, `standoff sigue tan lejos de la línea como antes: ${GOALIE.standoff}`)
 })
 
 test("kickoff restaura posiciones sin tocar marcador", () => {

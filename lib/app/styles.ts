@@ -87,6 +87,9 @@ export const CSS = `
 .fp-sticky .fp-btn{flex:1 1 150px;max-width:260px;min-width:0}
 
 .fp-match{position:absolute;inset:0;background:#050914}
+.fp-mission{position:absolute;top:max(8px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));z-index:5;display:flex;justify-content:center;pointer-events:none}
+.fp-mission-pill{pointer-events:auto;max-width:min(86vw,520px);background:rgba(0,0,0,.6);border:1px solid rgba(250,204,21,.55);border-radius:999px;padding:7px 16px;font-size:12px;line-height:1.3;text-align:center;color:#fde68a;font-weight:600}
+@media (max-width:460px){.fp-mission-pill{font-size:10.5px;padding:6px 12px}}
 .fp-hud{position:absolute;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));display:flex;flex-wrap:wrap;justify-content:flex-end;max-width:min(50vw,230px);gap:8px;z-index:5}
 .fp-pause-quick{display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
 .fp-pause-quick button{--c:#fff;width:46px;min-height:46px;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(255,255,255,.06);color:#fff;box-shadow:none;font-size:18px;letter-spacing:0}
