@@ -75,7 +75,7 @@ arcades deportivos clásicos:
 El selector de nivel ahora explica en una línea qué cambia. Motor: dos campos opcionales nuevos en
 `WorldConfig`/`World` (`carrierShield`, `aimAssist`), por lado, por defecto 1.
 
-**Verificado**: `tsc --noEmit` limpio; **317 tests pasan** (307 + 4 nuevos en
+**Verificado**: `tsc --noEmit` limpio; **320 tests pasan** (307 + 4 nuevos en
 `tests/game/difficulty.test.ts`: Normal neutro, monotonía de las ayudas, protección del portador, y
 un "jugador ingenuo" simulado que en 12 partidos saca +1 en Fácil, −10 en Normal, −18 en Difícil).
 `pnpm e2e`: **75/75**, `pnpm e2e:2p` pasa y `pnpm audit:ui` da **sin hallazgos en 7 tamaños** (ver la auditoría de abajo). Capturas revisadas en madera/cemento/sintético, cancha completa, vertical y con la bocha
@@ -93,6 +93,15 @@ stick, libre o tapado, y si no había nadie ahí la bocha salía al vacío. Ahor
 - El pase **manual** sigue: tocar al compañero (o su flecha de borde) le pasa a ESE.
 - Tests: 3 nuevos en `actions.test.ts` (stick hacia un tapado → va al libre; rival pegado al receptor no
   cuenta como libre; stick al vacío → igual va al libre). 313 tests, e2e 75/75.
+
+**Bug: gol por detrás del arco (`clipThroughCage` en `world.ts`)** — reportado jugando: un jugador que
+venía con la bocha por detrás del arco y empujaba contra la red metía gol. El cuerpo sí chocaba con la
+red, pero la bocha llevada se ubicaba en la punta del palo sin mirar el arco: el palo atravesaba la red
+de atrás (o una lateral), la bocha quedaba adentro y se cobraba gol. Ahora, si el tramo jugador → punta
+del palo cruza la red de atrás o una lateral, la bocha queda de este lado de la red; y un gol "llevado"
+solo vale si el portador está del lado de la cancha (entró por la boca). Tests nuevos en
+`tests/engine/goal-from-behind.test.ts` (los dos arcos, empujando de frente y en diagonal, rodeando por
+el costado, y tiros sueltos desde atrás a 8/18/30 m/s): fallaban antes del arreglo, pasan ahora.
 
 **Arquero: volada al costado, golpe de palo y sin retención** — pedido: "el arquero se tira volado y
 ataja, y pega con el palo; se tiene que tirar para los lados" + "auditá retención del arquero".

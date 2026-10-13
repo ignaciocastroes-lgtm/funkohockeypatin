@@ -791,11 +791,47 @@ function giveTo(w: World, s: Skater) {
   p.vy = s.vy
 }
 
+/**
+ * Bug real (Ronda 61, reportado jugando): un jugador que venía con la bocha POR DETRÁS del arco y
+ * empujaba contra la red metía gol. El cuerpo choca con la red, pero la bocha llevada se ubicaba en la
+ * punta del palo sin mirar el arco: el palo "atravesaba" la red de atrás (o la de los costados), la
+ * bocha quedaba adentro del arco y `pointInGoal` lo cobraba. Ahora, si el tramo jugador → punta del
+ * palo cruza la red de atrás o una lateral, la bocha se queda de este lado de esa red. Por la BOCA
+ * (la línea de gol entre los palos) sí puede entrar llevada: ese es el gol de verdad.
+ */
+function clipThroughCage(sx: number, sy: number, px: number, py: number, pr: number): { x: number; y: number } {
+  const dx = px - sx, dy = py - sy
+  const len = Math.hypot(dx, dy)
+  if (len < 1e-9) return { x: px, y: py }
+  let tMin = Infinity
+  for (const g of GOALS) {
+    const walls: Array<[number, number, number, number]> = [
+      [g.backX, g.yMin, g.backX, g.yMax], // red de atrás
+      [g.lineX, g.yMin, g.backX, g.yMin], // lateral
+      [g.lineX, g.yMax, g.backX, g.yMax], // lateral
+    ]
+    for (const [ax, ay, bx, by] of walls) {
+      // intersección del tramo (s→p) con la pared, ensanchada por el radio de la bocha
+      const ex = bx - ax, ey = by - ay
+      const den = dx * ey - dy * ex
+      if (Math.abs(den) < 1e-12) continue
+      const t = ((ax - sx) * ey - (ay - sy) * ex) / den
+      const u = ((ax - sx) * dy - (ay - sy) * dx) / den
+      const pad = (pr + GOAL.wallThickness) / Math.hypot(ex, ey)
+      if (t >= 0 && t <= 1 + pr / len && u >= -pad && u <= 1 + pad) tMin = Math.min(tMin, t)
+    }
+  }
+  if (tMin === Infinity) return { x: px, y: py }
+  const keep = Math.max(0, tMin * len - (pr + GOAL.wallThickness + 0.01))
+  return { x: sx + (dx / len) * keep, y: sy + (dy / len) * keep }
+}
+
 function placeCarried(w: World, s: Skater) {
   const p = w.puck
   const off = s.radius + p.radius + SKATER.stickReach
-  p.x = s.x + Math.cos(s.stickAngle) * off
-  p.y = s.y + Math.sin(s.stickAngle) * off
+  const c = clipThroughCage(s.x, s.y, s.x + Math.cos(s.stickAngle) * off, s.y + Math.sin(s.stickAngle) * off, p.radius)
+  p.x = c.x
+  p.y = c.y
   const bc = boardContact(p.x, p.y, p.radius)
   if (bc) { p.x += bc.nx * bc.pen; p.y += bc.ny * bc.pen }
   p.vx = s.vx
@@ -874,8 +910,10 @@ function updatePuck(w: World, dt: number) {
     if (!carrier) { p.carrierId = null }
     else {
       placeCarried(w, carrier)
+      // Gol llevado: solo si el portador está del lado de la CANCHA (entró por la boca). Un portador
+      // detrás de la línea de gol no puede meterla llevada (doble seguro de `clipThroughCage`).
       const carriedGoal = pointInGoal(p.x, p.y)
-      if (carriedGoal !== null) { scoreGoal(w, carriedGoal); return }
+      if (carriedGoal !== null && (carrier.x - GOALS[carriedGoal].lineX) * GOALS[carriedGoal].dir < 0) { scoreGoal(w, carriedGoal); return }
       if (carrier.controlGrace <= 0) {
         for (const o of w.skaters) {
           if (o.side === carrier.side || o.pickupCooldown > 0) continue
