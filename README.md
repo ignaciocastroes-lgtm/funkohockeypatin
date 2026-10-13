@@ -4,6 +4,175 @@ Hockey sobre patines (rink hockey) arcade, en una pista reglamentaria de **40 ×
 jugarse en el teléfono en horizontal con **dos dedos**. Incluye partido suelto y un modo **Copa** de
 eliminación directa a 4 equipos.
 
+## Ronda 61 — bocha visible, FPS y dificultad por nivel
+
+Pedido: que la pelota se vea (era difícil saber dónde estaba), sin que los efectos bajen los FPS;
+revisar cómo se dibuja el público; y que el juego sea jugable, fácil o difícil según el nivel.
+
+**Primero se midió, después se tocó.** Perfil de CPU en Chromium (pantalla 844×390 a densidad 3x,
+como un teléfono): el JavaScript del dibujo era ~5 % del tiempo — lo caro era **rasterizar**. Con un
+banco de pruebas que llama `drawScene` aislado y mide la mediana (`getImageData` fuerza el pintado),
+encendiendo y apagando cada pieza, el ranking real fue: **1) los jugadores (sobre todo el pelo)**,
+2) el público en vista completa, 3) el piso sintético. El público no era el primer culpable, aunque
+también se cambió.
+
+| `drawScene`, ms por cuadro (mediana) | Ronda 60 | Ronda 61 |
+| --- | --- | --- |
+| Seguir la jugada, madera | 22.0 | 5.3 |
+| Seguir la jugada, sintético | 19.5 | 8.7 |
+| Cancha completa, madera | 18.0 | 8.6 |
+| Cancha completa, sintético | 21.3 | 7.7 |
+
+Ojo con estos números: son Chromium con rasterizado por software (este entorno no tiene GPU) e
+incluyen el cambio de densidad 2.5x → 2x. Sirven para comparar antes/después, no como FPS de un
+teléfono. En un teléfono real los bitmaps horneados (`drawImage`) van directo a la GPU, así que la
+ganancia debería ser igual o mayor — pero eso hay que confirmarlo jugando.
+
+**Bocha (`drawBall` en `draw.ts`)** — todo con círculos y trazos planos: cero `shadowBlur`, cero
+gradientes, cero `clip` (justo lo que había bajado los FPS en intentos anteriores).
+- **Tamaño mínimo real en pantalla**: antes `max(radio, 4px)·0.62` ≈ 5 px de diámetro. Ahora ~11 px
+  (~14 con el contorno), en cualquier zoom.
+- **Amarillo flúor con contorno oscuro** (antes naranja oscuro sobre madera marrón): contrasta con
+  las tres pistas y con casi todas las camisetas.
+- **Sonar**: suelta y en juego, emite un aro que se expande una vez por segundo — lo que la encuentra
+  de reojo cuando quedó entre piernas o contra la valla.
+- **Estela tipo cometa** cuando va rápido (> 5 m/s): una sola forma rellena que se afina hacia atrás.
+- **Flecha en el borde** de la pantalla cuando queda fuera de cuadro.
+- El **punto central** de la pista era naranja y casi del tamaño de la bocha (un señuelo en el medio
+  de la cancha): ahora es del color de las líneas. El aro "lleva la bocha" del portador pasó al
+  amarillo de la bocha nueva.
+
+**Rendimiento (`draw.ts`, `layers.ts` nuevo, `match.ts`)**
+- **Cabezas y dorsales horneados en sprites** (`stampSprite`): el pelo eran hasta ~200 arcos/trazos
+  por cabeza con `clip`, por jugador, por cuadro. Ahora se pinta una vez por jugador y escalón de zoom
+  y se estampa girado. Fue la ganancia más grande.
+- **Público horneado** (el cambio de forma de renderizar que se intuía): cada banda de tribuna se pinta
+  una vez en 6 bitmaps — el mismo público en 6 instantes de su saltito — y cada cuadro estampa el que
+  toca fundido con el siguiente. ≤ 8 `drawImage` por cuadro sin importar cuánta gente haya. El
+  entusiasmo ahora acelera el ritmo del salto en vez de estirarlo. Memoria: ~11 MB.
+- **Piso sintético horneado** (800 baldosas → 1 `drawImage`). Madera y cemento se dejaron
+  vectoriales: medido, con pocas piezas grandes es más barato así.
+- **Sin `shadowBlur` ni gradientes por cuadro** en: disco de compañero (además el tramado pasó de ~20
+  trazos con `clip` a 1 trazo), mira de pase, beacon del controlado, súper tiro, lámparas de combo,
+  pantalla del Cantoni.
+- **Densidad de píxel**: tope 2x (antes 2.5x, -36 % de píxeles); 1.5x en modo ahorro.
+- **Auto-ahorro en todas las vistas** (antes solo en las fijas): si pasa 1.5 s por debajo de 42 FPS,
+  activa ahorro + 1.5x solo. Ojo: el modo Batería de iOS limita a 30 FPS y lo va a disparar (es lo
+  correcto en ese caso).
+
+**Dificultad (`NIVEL_PROFILE` en `match.ts`)** — se respetó la decisión vigente (con test) de que la
+IA rival **no juega "más tonta"** en ningún nivel. Lo que se suma son ayudas al humano, como en los
+arcades deportivos clásicos:
+
+| | Fácil | Normal | Difícil |
+| --- | --- | --- | --- |
+| Ritmo rival / su arquero | 0.3 / 0.2 | 0.6 / 0.6 | 0.9 / 0.9 |
+| Ritmo de tus compañeros / tu arquero | 0.85 / 0.95 | 0.7 / 0.7 | 0.65 / 0.6 |
+| Ayuda de puntería (`aimAssist`) | ×1.6 | ×1 | ×0.7 |
+| Cono de robo a tu portador (`carrierShield`) | ×0.6 (33°) | ×1 (55°) | ×1.15 (63°) |
+
+**Normal queda idéntico a la Ronda 60.** En 2P online las ayudas quedan en Normal para los dos lados.
+El selector de nivel ahora explica en una línea qué cambia. Motor: dos campos opcionales nuevos en
+`WorldConfig`/`World` (`carrierShield`, `aimAssist`), por lado, por defecto 1.
+
+**Verificado**: `tsc --noEmit` limpio; **317 tests pasan** (307 + 4 nuevos en
+`tests/game/difficulty.test.ts`: Normal neutro, monotonía de las ayudas, protección del portador, y
+un "jugador ingenuo" simulado que en 12 partidos saca +1 en Fácil, −10 en Normal, −18 en Difícil).
+`pnpm e2e`: **75/75**, `pnpm e2e:2p` pasa y `pnpm audit:ui` da **sin hallazgos en 7 tamaños** (ver la auditoría de abajo). Capturas revisadas en madera/cemento/sintético, cancha completa, vertical y con la bocha
+fuera de cuadro. **Sin verificar**: un teléfono real y la sensación con las manos.
+
+**Pases al compañero libre (`bestPassTarget` en `aim.ts`, `actions.ts`)** — pedido: "los pases se tienen
+que dirigir al que está libre; de otro modo es manual y ahí toca girar el stick". Antes, con el stick
+empujado (casi siempre: se pasa corriendo) PASE/PASE FUERTE iban al compañero del cono de ±35° del
+stick, libre o tapado, y si no había nadie ahí la bocha salía al vacío. Ahora:
+- Manda quién está **libre**: nadie cortando la línea (1.4 m) y nadie encima del receptor (1.8 m). Libre
+  pesa 12 puntos; la dirección del stick (o de la carrera) como mucho 4: solo desempata entre libres.
+- Un tapado recibe solo si no hay ningún libre. Nunca se regala al vacío habiendo compañeros.
+- El aro verde de "pase acá" usa el mismo cálculo y la misma dirección del stick: marca exactamente a
+  quién va a ir el pase si apretás ahora.
+- El pase **manual** sigue: tocar al compañero (o su flecha de borde) le pasa a ESE.
+- Tests: 3 nuevos en `actions.test.ts` (stick hacia un tapado → va al libre; rival pegado al receptor no
+  cuenta como libre; stick al vacío → igual va al libre). 313 tests, e2e 75/75.
+
+**Arquero: volada al costado, golpe de palo y sin retención** — pedido: "el arquero se tira volado y
+ataja, y pega con el palo; se tiene que tirar para los lados" + "auditá retención del arquero".
+
+*Lo que dice el reglamento* (World Skate, Rulebook 2026):
+- Art. 12.2: para atajar puede arrodillarse, sentarse, **tirarse** o arrastrarse, y parar la bocha con
+  cualquier parte del cuerpo; siempre con el palo en la mano.
+- Art. 15.1(k): **echarse encima de la bocha o trabarla entre las piernas** para que no se juegue es
+  falta técnica; 15.1(b): inmovilizarla contra la valla, también. Dentro del área → **penal** (21.2).
+- Art. 15.1(j): agarrarla con la mano es falta técnica.
+- Faltas del arquero con el palo (17.4.b falta de equipo, 18.1.m azul, 19.1.p roja): pegarle al palo,
+  patines o canilleras de un rival **con la bocha detrás de su área**.
+- "Dos toques": no aparece en el reglamento para el arquero. Lo más parecido: el que ejecuta un tiro
+  libre indirecto no puede volver a tocarla (27.2.f). Si es una regla local, falta la fuente.
+
+*Lo que hace ahora el juego:*
+- **Volada** (`GOALIE.diveShift/diveReach/diveDepth/getUpTime`, `world.ts`): al tirarse elige el lado
+  por donde ve venir la bocha y su cuerpo se corre hacia ese lado (más largo hacia el tiro, más fino
+  hacia la cancha). Antes era una elipse simétrica en el lugar ("abrirse de piernas"). Después queda
+  **0.35 s en el piso** sin poder correrse: un rebote rápido al otro lado le gana, como en la realidad.
+- **Dibujo = hitbox** (`goalieDivePose`/`goalieHitbox` en `draw.ts`): tendido de costado, pads hacia el
+  tiro, casco del otro lado, guante arriba del lado de la cancha. Todo cabe en el hitbox de ese instante
+  (test). La volada se ve solo mientras el motor lo tiene tirado (sin el giro de 29° de antes).
+- **Golpe de palo**: en la atajada y en el despeje el palo barre hacia afuera. El palo no ataja (no es
+  hitbox); golpea.
+- **Sin retención**: bocha quieta junto al arquero → le pega con el palo a los **0.3 s** (antes 0.5) y
+  sale a **13 m/s** (antes 9: apenas pasaba su propia zona). Nunca se echa encima ni la traba.
+- Las faltas con el palo con la bocha detrás del arco **no se implementaron**: el arquero IA nunca juega
+  detrás de su arco, así que esa situación no puede darse.
+- Equilibrio medido (1000 tiros fuertes a la esquina): 13 % de gol antes → 9 % ahora. Centro y tiros
+  flojos: 0 % igual que antes. Simulación por nivel: Fácil −2, Normal −5, Difícil −12 (sigue en orden).
+- Tests: `tests/game/goalie-pose.test.ts` (dibujo dentro del hitbox, volada hacia el tiro, queda en el
+  piso sin correrse, despeje inmediato y fuerte). 317 tests, e2e 75/75.
+
+**Auditoría de las fallas de e2e y audit:ui** (pedido aparte). Antes de esta ronda, `pnpm e2e` daba
+8–9 fallas y `pnpm audit:ui` 36 hallazgos — idénticos en el zip de la Ronda 60 sin tocar, o sea que
+venían de antes. Revisadas una por una contra el código actual:
+
+*Pruebas que quedaron viejas (el juego cambió a propósito y la prueba no se actualizó)* — se corrigió la prueba:
+- "Sin botón de entrenamiento mientras no esté desbloqueado" + "avisa con un diálogo" + "a los 3 s
+  todavía no": el entrenamiento viene **desbloqueado de fábrica** (`DEFAULT_SETTINGS.trainingUnlocked`,
+  decisión de cuando se armó el camino de misiones). Ahora la prueba verifica que aparece desde el
+  arranque, y los atajos secretos se prueban partiendo de una partida guardada que lo tenga cerrado.
+- "Mantener 6 s el título PARTIDO": ese gesto ya no existe; el de celular es **7 toques al logo** del menú.
+- "Los 4 botones arriba a la derecha": la barra quedó en **2** (pausa y vista).
+- "El deslizamiento del segundo dedo patea": el esquema honda se sacó; se patea con el **botón TIRO**.
+- Copa: ya no se marcan 4 equipos (`pick-*`); elegís **el tuyo** (`mine-*`) y los otros 3 salen sorteados.
+- "3 capas de audio": son **5** desde que se sumaron banda y fiesta.
+- Entrenamiento sin público: el botón ya no es `train-local` sino `train-start`.
+
+*Pruebas inestables (medían mal)*:
+- "La ovación sobresale +10 dB del murmullo" (pasaba o no según la corrida): la **música de fondo**,
+  sumada después de escribir el chequeo, sube el "murmullo" medido ~7 dB. Medido: con música +8..+12 dB,
+  sin música +16..+18. El chequeo mide al público, así que ahora apaga la música (que tiene su control
+  propio) y además promedia el murmullo en 2 s en vez de una sola ventana de 46 ms. Queda en +15..+18.
+- El bloque de audio se caía al final: con `?time=8` el partido terminaba antes y el botón de pausa
+  quedaba deshabilitado. Ahora ese bloque usa un partido de 60 s.
+
+*Fallas reales de interfaz (límites de rondas anteriores que ya no aplicaban)* — se corrigió el juego:
+- Pausa/vista a **38 px** en vertical: ese achique era para cuando la barra tenía hasta 5 botones; con 2
+  entran a 46 px. 38 px quedaba bajo el mínimo táctil de 44.
+- Selector **ES/PT a 32 px** de alto → 44 px.
+- En **568×320** el selector tapaba "Instalar la app", y en **320×568** el menú no entraba (609 px de
+  568): el menú creció (entrenamiento visible desde el arranque, 2 jugadores, instalar) sobre un layout
+  pensado para menos botones. Ahora: en vertical bajo, dos columnas (como ya era en horizontal bajo); en
+  horizontal bajo, el selector va arriba a la izquierda (columna del logo); en vertical el menú deja
+  lugar abajo para el selector, y en el menú no se dibujan las esquinas decorativas de abajo.
+
+*Hallazgo de rendimiento de paso*: los 4 botones de acción tenían `backdrop-filter: blur(9px)` sobre el
+canvas — el navegador re-desenfoca lo que hay detrás de cada botón en cada cuadro (el canvas cambia 60
+veces por segundo), una de las cosas más caras en un teléfono. Se sacó; el "vidrio" es ahora un color
+algo más opaco. Este costo no lo mide el banco de `drawScene` de arriba (es del navegador, no del
+canvas): queda por confirmar en el teléfono.
+
+Nota: `pnpm e2e:2p` deja sus capturas (`0*-*.png`) en la raíz del proyecto.
+
+**Archivos tocados**: `lib/game/{draw,match,actions}.ts`, `lib/game/layers.ts` (nuevo),
+`lib/engine/{types,world,aim,constants}.ts`, `lib/app/{app,styles}.ts`, `scripts/e2e.mjs`,
+`tests/game/{difficulty (nuevo),goalie-pose (nuevo),actions}.test.ts`.
+
 ## Ronda 39 — auditoría de UI/rendimiento + bocha, entrenamiento y arquero
 
 Punto de partida: auditoría pedida sobre el tamaño/posición de los botones de pase y tiro, el marcador

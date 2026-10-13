@@ -13,9 +13,18 @@ const { check } = r
 // autoplay permitido: equivale a un jugador que ya tocó la pantalla (si no, el navegador deja el audio en pausa)
 const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] })
 const errs = []
-async function fresh(vp = { width: 844, height: 390 }) {
+async function fresh(vp = { width: 844, height: 390 }, { lockedTraining = false } = {}) {
   const ctx = await browser.newContext({ viewport: vp, hasTouch: true })
   const page = await ctx.newPage()
+  // El entrenamiento viene desbloqueado de fábrica (ver DEFAULT_SETTINGS en storage.ts). Para probar
+  // los atajos secretos que lo desbloquean hay que partir de una partida guardada que lo tenga cerrado
+  // — como la de alguien que viene de una versión vieja. Solo la primera carga: después manda lo guardado.
+  if (lockedTraining) await page.addInitScript(() => {
+    if (!sessionStorage.getItem("__seeded")) {
+      sessionStorage.setItem("__seeded", "1")
+      localStorage.setItem("funko-patin:v1", JSON.stringify({ v: 1, customTeams: [], settings: { trainingUnlocked: false }, cup: null }))
+    }
+  })
   page.on("pageerror", (e) => errs.push(String(e)))
   page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()) })
   const h = {
@@ -77,7 +86,12 @@ await r.block("MENÚ", async () => {
   const b = await t.menu()
   check("arranque: demo primero, menú después de tocar", b.demoOk && b.menuOk)
   check("resumen del partido visible", /\S+ vs \S+/.test(await t.page.locator(".fp-summary").innerText()))
-  check("sin botón de entrenamiento mientras no esté desbloqueado", (await t.K("training").count()) === 0)
+  // Antes: "sin botón de entrenamiento mientras no esté desbloqueado". Desde que el camino de misiones
+  // es la puerta de entrada, el entrenamiento viene abierto de fábrica (DEFAULT_SETTINGS.trainingUnlocked).
+  check("el menú ofrece el entrenamiento desde el arranque (viene desbloqueado)", (await t.K("training").count()) === 1)
+  const t2 = await fresh(undefined, { lockedTraining: true }); await t2.menu()
+  check("con una partida vieja que lo tenía cerrado, no aparece hasta desbloquearlo", (await t2.K("training").count()) === 0)
+  await t2.ctx.close()
   await t.ctx.close()
 })
 
@@ -134,7 +148,8 @@ await r.block("PARTIDO SUELTO: sin tutorial, pausa, salir", async () => {
   check("entra al partido con canvas y reloj corriendo", (await scr()) === "match" && (await M("m.world.time")) > 0.5 && (await page.locator("canvas").count()) === 1)
   check("el partido suelto NO muestra el tutorial (eso es de la Copa)", (await page.locator(".fp-dialog").count()) === 0)
   const hud = await page.evaluate(() => [...document.querySelectorAll(".fp-hud button")].map((b) => { const r = b.getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height } }))
-  check("los 4 botones están arriba a la derecha (no tapan la zona del pulgar)", hud.length === 4 && hud.every((b) => b.l > 422 && b.t < 30 && b.w >= 44 && b.h >= 44), JSON.stringify(hud))
+  // La barra quedó en 2 botones (pausa y vista); cambiar jugador/sonido/pantalla viven en la pausa.
+  check("los 2 botones (pausa y vista) están arriba a la derecha (no tapan la zona del pulgar)", hud.length === 2 && hud.every((b) => b.l > 422 && b.t < 30 && b.w >= 44 && b.h >= 44), JSON.stringify(hud))
   await K("pause").click(); await page.waitForTimeout(350)
   const t0 = await M("m.world.time"); await page.waitForTimeout(500)
   check("en pausa el reloj no avanza", Math.abs((await M("m.world.time")) - t0) < 1e-6)
@@ -168,13 +183,16 @@ await r.block("DOS DEDOS, FINAL Y REVANCHA", async () => {
     ev("pointerdown", 1, 150, 300); ev("pointermove", 1, 230, 300)
     let got = null; const t0 = performance.now()
     while (performance.now() - t0 < 4000) { await sleep(50); if (Mh().world.puck.carrierId === "L1") { got = Math.round(performance.now() - t0); break } }
-    ev("pointerdown", 2, 600, 300)
-    for (let k = 1; k <= 6; k++) { ev("pointermove", 2, 600 + k * 22, 300 - k * 22); await sleep(8) }
-    ev("pointerup", 2, 600 + 6 * 22, 300 - 6 * 22); await sleep(120)
+    // Ya no existe el "deslizar con el segundo dedo para patear" (esquema honda): el segundo dedo
+    // aprieta el botón TIRO del rombo, que es como se patea hoy.
+    const tiro = document.querySelector('button[aria-label="Tiro"]')
+    tiro.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 2, bubbles: true, cancelable: true, pointerType: "touch" }))
+    tiro.dispatchEvent(new PointerEvent("pointerup", { pointerId: 2, bubbles: true, cancelable: true, pointerType: "touch" }))
+    await sleep(120)
     const p = Mh().world.puck; const out = { got, carrier: p.carrierId, speed: Math.hypot(p.vx, p.vy) }
     ev("pointerup", 1, 230, 300); return out
   })
-  check("el joystick recoge el puck y el deslizamiento lo patea", g.got !== null && g.carrier === null && g.speed > 15, JSON.stringify(g))
+  check("el joystick recoge el puck y el botón TIRO lo patea", g.got !== null && g.carrier === null && g.speed > 12, JSON.stringify(g))
   await page.waitForSelector('[aria-label="Fin del partido"]', { timeout: 25000 })
   const txt = (await page.locator('[aria-label="Fin del partido"]').innerText()).toLowerCase()
   check("pantalla final con estadísticas", ["tiros", "pases completos", "robos", "faltas"].every((w) => txt.includes(w)))
@@ -254,14 +272,10 @@ await r.block("SAQUE TRAS EL GOL: la pelota es de quien lo recibió", async () =
 await r.block("COPA: el tutorial sale al arrancar, se puede omitir y no volver a mostrar", async () => {
   const t = await fresh(); const { page, K, saved, M } = t
   const startCup = async () => {
-    // desde el menú hay que entrar a la Copa; tras cancelar una, la app ya queda en la selección de equipos
-    if ((await page.locator('[data-key^="pick-"]').count()) === 0) await K("cup").click()
-    // la pantalla ya trae 4 equipos marcados: se deja marcado exactamente este grupo (sin des-marcar sin querer)
-    const want = ["n-es", "n-pt", "n-ar", "n-cl"]
-    for (const id of await page.evaluate(() => [...document.querySelectorAll('[data-key^="pick-"]')].filter((e) => e.getAttribute("aria-checked") === "true").map((e) => e.getAttribute("data-key").slice(5)))) {
-      if (!want.includes(id)) await K(`pick-${id}`).click()
-    }
-    for (const id of want) if ((await K(`pick-${id}`).getAttribute("aria-checked")) !== "true") await K(`pick-${id}`).click()
+    // desde el menú hay que entrar a la Copa; tras cancelar una, la app ya queda en la elección de equipo.
+    // La Copa ya no se arma marcando 4 equipos: elegís el TUYO y los otros 3 salen sorteados.
+    if ((await page.locator('[data-key^="mine-"]').count()) === 0) await K("cup").click()
+    await K("mine-n-cl").click()
     await K("start-cup").click()
     await K("play-cup").click(); await page.waitForTimeout(1400)
   }
@@ -299,20 +313,20 @@ await r.block("COPA: el tutorial sale al arrancar, se puede omitir y no volver a
 })
 
 await r.block("ENTRENAMIENTO: los dos atajos secretos", async () => {
-  const t = await fresh(); const { page, K, saved, scr } = t
+  const t = await fresh(undefined, { lockedTraining: true }); const { page, K, saved, scr } = t
   await t.menu(); await K("setup").click()
   await page.keyboard.down("Shift")
   for (const d of ["0", "1", "7", "8", "9"]) await page.keyboard.press(`Digit${d}`)
   await page.keyboard.up("Shift"); await page.waitForTimeout(400)
   check("PC: Shift + 0-1-7-8-9 desbloquea el entrenamiento (con la tecla física, no el símbolo)", (await saved()).settings.trainingUnlocked === true)
   check("y avisa con un diálogo", (await page.locator(".fp-dialog").count()) > 0)
-  const t2 = await fresh(); await t2.menu(); await t2.K("setup").click()
-  const box = await t2.page.locator("h2.fp-arcade").first().boundingBox()
-  await t2.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await t2.page.mouse.down(); await t2.page.waitForTimeout(3000)
-  check("celular: a los 3 s todavía no", (await t2.saved()).settings.trainingUnlocked === false)
-  await t2.page.waitForTimeout(3500)
-  check("celular: manteniendo el título 'PARTIDO' 6 s lo desbloquea", (await t2.saved()).settings.trainingUnlocked === true)
-  await t2.page.mouse.up()
+  // Celular: ya no es "mantener 6 s el título PARTIDO" — ahora son 7 toques rápidos al logo del menú
+  // (ver `logoBrand` en app.ts, LOGO_TAPS_NEEDED / LOGO_TAP_WINDOW).
+  const t2 = await fresh(undefined, { lockedTraining: true }); await t2.menu()
+  for (let i = 0; i < 3; i++) { await t2.page.locator(".fp-bolt").click(); await t2.page.waitForTimeout(120) }
+  check("celular: con 3 toques al logo todavía no", (await t2.saved()).settings.trainingUnlocked === false)
+  for (let i = 0; i < 4; i++) { await t2.page.locator(".fp-bolt").click(); await t2.page.waitForTimeout(120) }
+  check("celular: 7 toques rápidos al logo lo desbloquean", (await t2.saved()).settings.trainingUnlocked === true)
   // ya desbloqueado: el menú ofrece el modo
   await page.locator('.fp-dialog button').first().click().catch(() => {})
   await K("back").click(); await page.waitForTimeout(300)
@@ -344,13 +358,27 @@ await r.block("PÚBLICO Y AUDIO: murmullo, ovación de gol, silencio y pausa (me
   })
   const db = () => page.evaluate("window.__db()")
   const audio = () => page.evaluate("__handle.debug.match().audio")
-  await t.menu(); await K("play").click(); await page.waitForTimeout(500)
+  // Partido largo: este bloque tarda más de los 8 s del URL de siempre y con el partido terminado el
+  // botón de pausa queda deshabilitado (el bloque se caía esperando poder apretarlo).
+  await bootToMenu(page, URL.replace("time=8", "time=60")); await K("play").click(); await page.waitForTimeout(500)
   await page.mouse.click(600, 200) // gesto sobre la cancha: desbloquea el audio
   await page.waitForFunction(() => __handle.debug.match()?.audio?.status === "ready", null, { timeout: 8000 })
+  // Este bloque mide al PÚBLICO (murmullo vs ovación). La música de fondo ("fiesta") se sumó después de
+  // escribir este chequeo y tiene su propio control: con ella prendida el "murmullo" medido sube ~7 dB
+  // y la ovación quedaba +8..+12 dB por encima (al borde del +10, pasaba o no según la corrida). Sin
+  // música: +16..+18. Se apaga la música para medir lo que el chequeo dice medir.
+  await M("m.setMusic('off')")
   let a = await audio()
-  check("los 6 audios se cargan y decodifican (estado 'ready', 3 capas de bucle)", a.status === "ready" && a.layers === 3, JSON.stringify(a))
+  // 5 capas de bucle desde que se sumaron la banda y la fiesta (ver `build()` en crowd.ts): bedA, bedC,
+  // energy, band, fiesta. Antes eran 3.
+  check("los audios se cargan y decodifican (estado 'ready', 5 capas de bucle)", a.status === "ready" && a.layers === 5, JSON.stringify(a))
   await page.waitForTimeout(2500)
-  const calm = await db()
+  // El murmullo se promedia en 2 s (potencia media de 8 ventanas). Antes era UNA ventana de 46 ms: con
+  // 5 capas que respiran, esa sola muestra variaba varios dB y el chequeo de la ovación (+10 dB sobre
+  // esto) pasaba o fallaba según la suerte de esa ventana.
+  let pw = 0
+  for (let i = 0; i < 8; i++) { pw += 10 ** ((await db()) / 10); await page.waitForTimeout(250) }
+  const calm = 10 * Math.log10(pw / 8)
   check(`el murmullo de fondo suena (${calm.toFixed(0)} dB) y es discreto`, calm > -60 && calm < -25, String(calm))
   // gol real del equipo humano: la ovación tiene que sobresalir claramente del murmullo
   await page.evaluate(() => { const w = __handle.debug.match().world; for (const k of w.skaters) { k.x = k.px = 20; k.y = k.py = 3 + Number(k.id.slice(1)) * 3; k.vx = k.vy = 0 } w.goalies[1].y = w.goalies[1].py = 3; w.puck.carrierId = null; w.puck.x = w.puck.px = 37; w.puck.y = w.puck.py = 10; w.puck.vx = 26; w.puck.vy = 0; w.phase = "play" })
@@ -377,7 +405,7 @@ await r.block("PÚBLICO: el demo lo tiene y el entrenamiento no", async () => {
   await page.keyboard.down("Shift"); for (const d of ["0", "1", "7", "8", "9"]) await page.keyboard.press(`Digit${d}`); await page.keyboard.up("Shift"); await page.waitForTimeout(400)
   await page.locator(".fp-dialog button").first().click().catch(() => {})
   await K("back").click(); await K("training").click(); await page.waitForTimeout(300)
-  await K("train-local").click().catch(() => {}); await page.waitForTimeout(700)
+  await K("train-start").click(); await page.waitForTimeout(700)
   check("en el entrenamiento (práctica en soledad) no hay público", (await scr()) === "match" && (await page.evaluate("__handle.debug.match().audio")) === null)
   await t.ctx.close()
 })

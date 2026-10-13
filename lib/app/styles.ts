@@ -19,7 +19,12 @@ export const CSS = `
 .fp-corner.bl{bottom:14px;left:14px;border-right:0;border-top:0}.fp-corner.br{bottom:14px;right:14px;border-left:0;border-top:0}
 
 .fp-menu{gap:22px}
-.fp-lang{position:absolute;right:max(10px,env(safe-area-inset-right));bottom:max(22px,calc(env(safe-area-inset-bottom) + 18px));display:flex;gap:4px;z-index:2}.fp-lang button{min-width:44px;min-height:32px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:rgba(15,23,42,.6);color:#e2e8f0;font-family:inherit;font-weight:700;font-size:12px;line-height:1;letter-spacing:.08em;cursor:pointer}.fp-lang button[aria-pressed=true]{background:#22d3ee;color:#04222a;border-color:#22d3ee}
+/* Ronda 61: con el selector ES/PT a 44 px (mínimo táctil; antes 32) la esquina de abajo a la derecha
+   ya no alcanza para el selector Y la esquina decorativa: en el menú se ocultan las dos de abajo, y en
+   vertical el contenido deja lugar abajo para que el último botón no quede pegado al selector. */
+.fp-menu .fp-corner.bl,.fp-menu .fp-corner.br{display:none}
+@media (orientation:portrait){.fp-menu{padding-bottom:84px}}
+.fp-lang{position:absolute;right:max(10px,env(safe-area-inset-right));bottom:max(22px,calc(env(safe-area-inset-bottom) + 18px));display:flex;gap:4px;z-index:2}.fp-lang button{min-width:44px;min-height:44px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:rgba(15,23,42,.6);color:#e2e8f0;font-family:inherit;font-weight:700;font-size:12px;line-height:1;letter-spacing:.08em;cursor:pointer}.fp-lang button[aria-pressed=true]{background:#22d3ee;color:#04222a;border-color:#22d3ee}
 .fp-foot{position:absolute;left:0;right:0;bottom:max(4px,env(safe-area-inset-bottom));margin:0;text-align:center;font-size:11px;letter-spacing:.16em;color:#4ade80;opacity:.6;pointer-events:none;user-select:none}
 .fp-brand{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
 .fp-bolt{width:64px;height:64px;border-radius:50%;border:4px solid #ea580c;display:grid;place-items:center;box-shadow:0 0 28px #ea580c;color:#ea580c;cursor:pointer;-webkit-tap-highlight-color:transparent;overflow:hidden}
@@ -97,12 +102,11 @@ export const CSS = `
 .fp-hud button{--c:#fff;width:46px;height:46px;min-height:0;padding:0;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(0,0,0,.55);color:#fff;box-shadow:none;opacity:.7;font-size:18px;letter-spacing:0}
 .fp-hud button.view{font-size:12px;font-weight:800}
 .fp-hud button:hover,.fp-hud button:focus-visible{opacity:1;background:rgba(0,0,0,.8);color:#fff}
-/* Celular en vertical: la placa del marcador y esta barra (hasta 5 botones) comparten el mismo
-   ancho angosto de la pantalla real — achicando los botones les queda más lugar a los dos. */
+/* Ronda 61: acá había un achique a 38 px en vertical, pensado para cuando la barra tenía hasta 5
+   botones y competía por el ancho con la placa del marcador. Hoy son 2 (pausa y vista): entran a
+   46 px sin problema, y 38 px quedaba por debajo del mínimo táctil de 44 px. Solo se acerca el hueco. */
 @media (max-width:460px){
-  .fp-hud{gap:5px}
-  .fp-hud button{width:38px;height:38px;font-size:15px;border-radius:8px}
-  .fp-hud button.view{font-size:10.5px}
+  .fp-hud{gap:6px}
 }
 
 .fp-overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(2,6,16,.82);backdrop-filter:blur(3px);animation:fp-in .25s ease-out}
@@ -128,11 +132,22 @@ export const CSS = `
   .fp-menu .fp-actions .fp-btn{font-size:12px;line-height:1.15;padding:6px 8px}
   .fp-menu .fp-actions .fp-summary{margin:0}
   .fp-corner{display:none}
+  /* Ronda 61: el selector ES/PT (abajo a la derecha) tapaba el último botón del menú en 568x320 —
+     el menú creció (entrenamiento visible desde el arranque, 2 jugadores, instalar). En horizontal
+     bajo, las esquinas decorativas no se muestran: el selector pasa arriba a la IZQUIERDA (columna
+     del logo, libre; arriba a la derecha tapaba "Jugar partido"). */
+  .fp-lang{top:max(8px,env(safe-area-inset-top));bottom:auto;right:auto;left:max(10px,env(safe-area-inset-left))}
   .fp-dialog{padding:12px;gap:8px}.fp-stats td{padding:4px}
   .fp-sticky{padding-top:6px}
 }
 @media (max-height:640px) and (orientation:portrait){
-  .fp-menu{gap:12px;padding-bottom:24px}.fp-menu .fp-actions{gap:8px}
+  .fp-menu{gap:12px;padding-bottom:72px}.fp-menu .fp-actions{gap:8px}
+  /* Ronda 61: con entrenamiento visible desde el arranque el menú tiene 9 botones y ya no entraba en
+     una columna en 320x568 (609 px de 568). Mismo arreglo que el horizontal bajo: dos columnas. */
+  .fp-menu .fp-actions{display:grid;grid-template-columns:1fr 1fr;align-content:center;max-width:none;width:100%}
+  .fp-menu .fp-actions .fp-btn.solid,.fp-menu .fp-actions .fp-summary{grid-column:1 / -1}
+  .fp-menu .fp-actions .fp-btn{font-size:12px;line-height:1.15;padding:6px 8px;min-height:44px}
+  .fp-menu .fp-actions .fp-summary{margin:0}
   .fp-menu .fp-brand{gap:4px}.fp-menu .fp-bolt{width:46px;height:46px;border-width:3px}
   .fp-menu .fp-corner.bl,.fp-menu .fp-corner.br{display:none}
 }

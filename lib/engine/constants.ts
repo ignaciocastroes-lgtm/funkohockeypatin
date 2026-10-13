@@ -197,10 +197,13 @@ export const GOALIE = {
   clearSpeed: 5.5,
   /** Bocha más lenta que esto (m/s) y pegada al arquero = "la tiene el arquero". */
   holdSpeed: 1.2,
-  /** Cuánto (s) la sostiene antes de despejar solo — un instante, no una eternidad. */
-  holdDelay: 0.5,
-  /** Velocidad (m/s) del despeje automático. */
-  holdClearSpeed: 9,
+  /** Cuánto (s) la sostiene antes de despejar solo. Ronda 61: 0.5 → 0.3. El reglamento no deja que
+   *  el arquero retenga la bocha (World Skate, Art. 15.1.k: echarse encima o trabarla entre las
+   *  piernas es falta técnica, y dentro del área es penal — Art. 21.2): le pega con el palo YA. */
+  holdDelay: 0.3,
+  /** Velocidad (m/s) del despeje automático con el palo. Ronda 61: 9 → 13 — en el hockey patín el
+   *  despeje del arquero sale LEJOS (a 9 m/s apenas pasaba la mitad de su propia zona). */
+  holdClearSpeed: 13,
   /** Si la bocha cambia de dirección de golpe estando ya "entrando" (un desvío en un poste o un
    *  patinador) el arquero, que ya estaba alerta, tarda esto en volver a girar hacia la nueva
    *  trayectoria — más corto que `reactionDelay` (no arranca de cero: ya estaba mirando para ahí). */
@@ -225,7 +228,20 @@ export const GOALIE = {
    * esquina bien puesta sigue pudiendo ganarle, bastante menos seguido que antes de este archivo
    * existir. NO bajar este número para hacer pasar un test sin antes revisar si el test es el que
    * quedó desactualizado. */
-  diveReach: 0.35,
+  diveReach: 0.15,
+  /**
+   * Ronda 61 — "volada": un arquero de hockey patín no se abre de piernas en el lugar; se TIRA al
+   * piso hacia el lado del tiro (pads apilados, cuerpo de costado). En la atajada el centro de su
+   * cuerpo se corre esto (m) hacia el lado por donde ve venir la bocha (`Goalie.diveSide`): llega
+   * más lejos de ese lado y deja menos cubierto el otro — que es justo lo que pasa de verdad (por
+   * eso un tiro que se desvía hacia el lado contrario le gana). El dibujo es la misma elipse.
+   */
+  /** Tirado de costado, el cuerpo es más fino hacia la cancha que parado: semieje X = R × esto. */
+  diveDepth: 0.8,
+  diveShift: 0.2,
+  /** Ronda 61: segundos que tarda en levantarse después de la volada (sigue tirado de costado, sin
+   *  poder correrse). Un rebote rápido al otro lado le puede ganar. */
+  getUpTime: 0.35,
 } as const
 
 /**

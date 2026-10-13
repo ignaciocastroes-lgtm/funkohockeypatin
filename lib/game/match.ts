@@ -54,6 +54,28 @@ export type Nivel = "facil" | "normal" | "dificil"
  *  es qué tan rápido patina y tira. */
 export const NIVEL_SKILL: Record<Nivel, number> = { facil: 0.3, normal: 0.6, dificil: 0.9 }
 
+/**
+ * Dificultad completa por nivel (Ronda 61). Pedido: "que el juego sea jugable, fácil y difícil
+ * dependiendo del nivel del jugador". Hasta acá el nivel SOLO cambiaba el ritmo del rival — y con la
+ * lectura de juego de la IA en "nivel Dios" en cualquier dificultad (decisión vigente, con test), Fácil
+ * seguía siendo duro para alguien que recién agarra el juego.
+ *
+ * Se respeta esa decisión: la IA rival NO juega "más tonta" en ningún nivel. Lo que se suma son
+ * AYUDAS AL HUMANO, como hacen los arcades deportivos clásicos:
+ *  - `rival` / `rivalGoalie`: ritmo del rival y de su arquero (lo de siempre, `NIVEL_SKILL`).
+ *  - `mates` / `myGoalie`: ritmo de TUS compañeros IA y de TU arquero. Antes fijos en 0.7.
+ *  - `aimAssist`: cuánto "engancha" la ayuda de puntería pases y tiros (1 = la de siempre).
+ *  - `shield`: qué tan angosto es el cono por el que te pueden robar la bocha (1 = el de siempre).
+ *
+ * Normal queda EXACTAMENTE como estaba (todo en 1 / 0.7): nadie que ya jugaba en Normal nota cambio.
+ */
+export interface NivelProfile { rival: number; rivalGoalie: number; mates: number; myGoalie: number; aimAssist: number; shield: number }
+export const NIVEL_PROFILE: Record<Nivel, NivelProfile> = {
+  facil: { rival: NIVEL_SKILL.facil, rivalGoalie: 0.2, mates: 0.85, myGoalie: 0.95, aimAssist: 1.6, shield: 0.6 },
+  normal: { rival: NIVEL_SKILL.normal, rivalGoalie: NIVEL_SKILL.normal, mates: 0.7, myGoalie: 0.7, aimAssist: 1, shield: 1 },
+  dificil: { rival: NIVEL_SKILL.dificil, rivalGoalie: NIVEL_SKILL.dificil, mates: 0.65, myGoalie: 0.6, aimAssist: 0.7, shield: 1.15 },
+}
+
 export interface MatchTeam {
   name: string
   color: string
@@ -204,6 +226,10 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   const pantsColors: [string | undefined, string | undefined] = [o.teams[0].pantsColor, o.teams[1].pantsColor]
   const names: [string, string] = [o.teams[0].name, o.teams[1].name]
   const crests: [string, string] = [o.teams[0].crest, o.teams[1].crest]
+  // En 2P online las ayudas al humano quedan parejas (Normal) para los dos lados: el nivel elegido
+  // por el anfitrión no puede regalarle ventaja sobre el invitado. El ritmo del rival IA sí sigue el nivel.
+  const prof = NIVEL_PROFILE[o.nivel] ?? NIVEL_PROFILE.normal
+  const helpProf = o.net ? NIVEL_PROFILE.normal : prof
   const world = createWorld({
     surface: o.surface,
     puckKind: o.puckKind,
@@ -216,7 +242,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     // Mismo ritmo que la IA de campo (ver `TeamAI`): el arquero rival también corre más rápido
     // con el nivel elegido (nunca "más vivo") — Dios vs Dios (`aiSkill` forzado) se lo lleva
     // puesto a los dos arqueros también.
-    goalieSkill: o.aiSkill ?? [0.7, NIVEL_SKILL[o.nivel]],
+    goalieSkill: o.aiSkill ?? [prof.myGoalie, prof.rivalGoalie],
+    carrierShield: [helpProf.shield, 1],
+    aimAssist: [helpProf.aimAssist, 1],
   })
   // ---------- 2P online ----------
   const netHost = o.net?.role === "host" ? o.net.session : null
@@ -230,7 +258,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let lastStickAt = 0
   let snapAt = 0
   const SNAP_MS = 50 // el host manda ~20 snapshots por segundo
-  const ai = new TeamAI({ skill: o.aiSkill ?? [0.7, NIVEL_SKILL[o.nivel]], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
+  const ai = new TeamAI({ skill: o.aiSkill ?? [helpProf.mates, prof.rival], seed: o.seed ?? ((Math.random() * 1e9) | 0) })
   const mission = o.training?.mission ? new MissionTracker(o.training.mission) : null
   let missionDoneNotified = false
   const stepper = new FixedStepper()
@@ -299,6 +327,10 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let dpr = 1
   let paused = false
   let graphicsSaver = !!o.graphicsSaver
+  // Red de contención (Ronda 61: en TODAS las vistas, antes solo en las fijas): si los cuadros por
+  // segundo caen y se quedan abajo, se activa solo el modo ahorro (tribuna liviana + menos densidad
+  // de píxel, ver `maxDpr`) sin tocar el ajuste del jugador. Se vuelve a probar al cambiar de vista.
+  let autoSaver = false
   let ended = false
   let destroyed = false
   let banner: { text: string; until: number } | null = null
@@ -322,10 +354,15 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   // de dibujo/HUD/cámara sigue pensando en horizontal, solo se rota el canvas al final.
   const portraitNow = () => cssH > cssW * 1.05
 
+  /** Densidad de píxel máxima del lienzo. Ronda 61: antes 2.5 fijo — en un teléfono de pantalla 3x eso
+   *  es 6.25 píxeles pintados por cada píxel "CSS", y el perfil mostró que el costo del juego es
+   *  justamente rasterizar, no la lógica. 2x ya se ve nítido en la mano (4 píxeles por punto, -36 %
+   *  de relleno); en modo ahorro (manual o automático) 1.5x (-64 %). */
+  const maxDpr = () => (graphicsSaver || autoSaver ? 1.5 : 2)
   const resize = () => {
     cssW = Math.max(1, container.clientWidth)
     cssH = Math.max(1, container.clientHeight)
-    dpr = Math.min(2.5, window.devicePixelRatio || 1)
+    dpr = Math.min(maxDpr(), window.devicePixelRatio || 1)
     canvas.width = Math.round(cssW * dpr)
     canvas.height = Math.round(cssH * dpr)
     input.resize(portraitNow() ? cssH : cssW, portraitNow() ? cssW : cssH)
@@ -442,7 +479,11 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
           : action === "pase-fuerte" ? "Pase fuerte — directo al mejor compañero, más rápido y más difícil de cortar"
           : "Pase")
       btn.style.cssText = `position:absolute;overflow:hidden;width:${BTN_SIZE}px;height:${BTN_SIZE}px;border-radius:50%;` +
-        `background:${glassColor(color, 0.22)};backdrop-filter:blur(9px) saturate(160%);-webkit-backdrop-filter:blur(9px) saturate(160%);` +
+        // Ronda 61 (auditoría): sin `backdrop-filter`. Un desenfoque de fondo sobre el canvas obliga al
+        // navegador a re-desenfocar lo que hay detrás de los 4 botones EN CADA CUADRO (el canvas cambia
+        // 60 veces por segundo), justo en el teléfono, donde más cuesta. El "vidrio" ahora es un color
+        // más opaco: se ve casi igual y no cuesta nada.
+        `background:${glassColor(color, 0.34)};` +
         `border:1.5px solid ${glassColor(color, 0.65)};` +
         `box-shadow:0 0 14px ${glassColor(color, 0.35)}, inset 0 1px 2px rgba(255,255,255,.25), inset 0 -6px 10px rgba(0,0,0,.18);` +
         `color:#f8fafc;text-shadow:0 1px 3px rgba(0,0,0,.6);font-family:inherit;font-weight:800;font-size:11px;line-height:1.1;letter-spacing:.03em;touch-action:none;-webkit-touch-callout:none;` +
@@ -661,10 +702,6 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
   let raf = 0
   let last = 0
   let fpsSmooth = 60
-  // Red de contención para vista fija (completa / 3-4): si los cuadros por segundo caen y se quedan
-  // abajo, se activa solo el modo ahorro de tribuna (sin tocar el ajuste del jugador). Vuelve a
-  // apagarse al cambiar de vista. Es lo único que se puede hacer sin medir la GPU real del aparato.
-  let autoSaver = false
   let lowFpsFrames = 0
   let stepsThisFrame = 0
 
@@ -761,9 +798,9 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     last = now
     stats.frames++
     if (dt > 0) fpsSmooth += (1 / dt - fpsSmooth) * 0.05
-    if (viewMode !== "auto" && !paused && !autoSaver) {
+    if (!paused && !autoSaver && !graphicsSaver) {
       lowFpsFrames = fpsSmooth < 42 ? lowFpsFrames + 1 : 0
-      if (lowFpsFrames > 90) autoSaver = true // ~1.5 s seguidos por debajo de 42 fps
+      if (lowFpsFrames > 90) { autoSaver = true; resize() } // ~1.5 s seguidos por debajo de 42 fps
     }
 
     const portrait = portraitNow()
@@ -884,7 +921,7 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     }
     const opts = {
       controlledId, humanSide: ((o.demo || o.spectator) ? null : mySide) as Side | null, colors, pantsColors, names, crests, alpha: sceneAlpha, fontFamily: FONT, crowdExcitement: crowd?.info.excitement, graphicsSaver: graphicsSaver || autoSaver,
-      superTrail: superTrail.live(now), goalieSave: saveFX, venue: o.venue,
+      superTrail: superTrail.live(now), goalieSave: saveFX, venue: o.venue, passAim: padAngle(),
     }
 
     // Cancha, joystick y línea de apuntado: viven en el espacio "virtual" horizontal y se rotan 90°
@@ -1002,14 +1039,15 @@ export function mountMatch(container: HTMLElement, o: MatchOptions): MatchHandle
     cycleView() {
       viewMode = viewMode === "auto" ? "full" : viewMode === "full" ? "three-quarter" : "auto"
       if (viewMode === "auto") cam.reset()
-      autoSaver = false; lowFpsFrames = 0; fpsSmooth = 60
+      if (autoSaver) { autoSaver = false; resize() }
+      lowFpsFrames = 0; fpsSmooth = 60
     },
     cyclePlayer,
     setLeftHanded(v: boolean) {
       input.leftHanded = v
       if (actionButtons) { actionButtons.style.left = v ? "14px" : ""; actionButtons.style.right = v ? "" : "14px" }
     },
-    setGraphicsSaver(v: boolean) { graphicsSaver = v },
+    setGraphicsSaver(v: boolean) { if (graphicsSaver !== v) { graphicsSaver = v; resize() } },
     get viewMode() { return viewMode },
     destroy() {
       destroyed = true

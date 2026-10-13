@@ -25,11 +25,13 @@ const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
 /** Potencia fija por botón (sin medidor: apretar = patear ya). */
 export const BTN_POWER: Record<ButtonAction, number> = { "pase": 0.45, "pase-fuerte": 1, "tiro": 0.6, "tiro-fuerte": 1 }
 
-/** Compañero más alineado con `angle` (cono de ±35°), o null. Prefiere el más cercano a igual ángulo. */
+/** Compañero más alineado con `angle` (cono de ±35°), o null. Prefiere el más cercano a igual ángulo.
+ *  Ronda 61: los botones de pase ya no lo usan (ver `bestPassTarget`); queda para quien necesite
+ *  "el compañero hacia donde apunto" literal. */
 export function teammateInCone(w: World, shooterId: string, angle: number): string | null {
   const me = findSkater(w, shooterId)
   if (!me) return null
-  const HALF = 0.61
+  const HALF = 0.61 * Math.min(1.4, w.aimAssist?.[me.side] ?? 1) // más ancho en Fácil (ver `World.aimAssist`)
   let best: string | null = null
   let bestScore = Infinity
   for (const t of w.skaters) {
@@ -95,10 +97,12 @@ export function performButton(w: World, side: Side, controlledId: string | null,
     if (kicked && w.puck.superShot) out.superShot = true
   } else {
     const strong = action === "pase-fuerte"
-    const tid = pad !== null ? teammateInCone(w, s.id, pad) : bestPassTarget(w, s.id)
+    // Ronda 61: al compañero LIBRE (ver `bestPassTarget`); el stick solo desempata entre libres. Antes:
+    // el que estuviera en el cono del stick, libre o no, o al vacío si no había nadie ahí.
+    const tid = bestPassTarget(w, s.id, pad)
     const t = tid ? findSkater(w, tid) : undefined
     if (!t) {
-      // Pad apretado y nadie en esa dirección: pase al espacio, hacia donde apunta el pad.
+      // Sin ningún compañero en cancha (no debería pasar en un partido): al espacio, hacia el stick.
       if (pad !== null) kick(w, s.id, pad, strong ? 20 : 12)
       return out
     }

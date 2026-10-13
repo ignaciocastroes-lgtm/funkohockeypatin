@@ -45,9 +45,12 @@ export function assistAim(w: World, shooterId: string, rawAngle: number, rawSpee
   const s = w.skaters.find((k) => k.id === shooterId)
   if (!s) return { angle: rawAngle, speed: rawSpeed, target: "free" }
 
+  // Cuánta ayuda: depende del nivel (Ronda 61, `World.aimAssist`); 1 = la de siempre.
+  const help = w.aimAssist?.[s.side] ?? 1
+
   // 1) compañero
   let bestId: string | undefined
-  let bestDiff = PASS_CONE
+  let bestDiff = PASS_CONE * help
   let bestAngle = rawAngle
   let bestDist = 0
   for (const t of w.skaters) {
@@ -72,11 +75,11 @@ export function assistAim(w: World, shooterId: string, rawAngle: number, rawSpee
   if (bestId && !(facingGoal && goalDiff < bestDiff * 0.5)) {
     return { angle: bestAngle, speed: Math.max(rawSpeed, passSpeedFor(bestDist)), target: "teammate", targetId: bestId }
   }
-  if (facingGoal && goalDiff < GOAL_CONE + 0.25) {
+  if (facingGoal && goalDiff < (GOAL_CONE + 0.25) * help) {
     // dónde cruza la línea de gol el tiro que dibujó el dedo
     const dx = g.lineX - s.x
     const yAtLine = s.y + Math.tan(rawAngle) * dx
-    const half = GOAL.mouth / 2 + 0.6
+    const half = GOAL.mouth / 2 + 0.6 * help
     if (Math.abs(yAtLine - g.cy) <= half) {
       const aimY = Math.min(g.cy + GOAL.mouth / 2 - 0.3, Math.max(g.cy - GOAL.mouth / 2 + 0.3, yAtLine))
       return { angle: Math.atan2(aimY - s.y, dx), speed: rawSpeed, target: "goal" }
@@ -86,13 +89,23 @@ export function assistAim(w: World, shooterId: string, rawAngle: number, rawSpee
 }
 
 /**
- * Para el "toque" sin deslizar: el mejor compañero para un pase automático.
- * Prefiere el que está adelante y libre de rivales en la línea de pase.
+ * A quién va el pase automático (botones PASE / PASE FUERTE, Espacio, el toque suelto) y el aro verde
+ * de "pase acá". Ronda 61 (pedido de Ignacio: "los pases se tienen que dirigir al que está libre; de
+ * otro modo es manual y ahí toca girar el stick"):
+ *
+ * Antes, con el stick empujado — o sea casi siempre, porque se pasa corriendo — el botón pasaba al
+ * compañero que quedara en un cono de ±35° hacia donde apuntaba el stick, ESTUVIERA LIBRE O NO, y si
+ * no había nadie ahí la tiraba al vacío. Para pasarle al libre había que girar el stick hacia él.
+ *
+ * Ahora manda quién está LIBRE (nadie cortando la línea de pase Y nadie encima del receptor). La
+ * dirección (`preferAngle`: el stick si está empujado; si no, hacia donde corre) solo desempata entre
+ * compañeros parecidos de libres. Un tapado gana solo si no hay ninguno libre. El pase "manual" sigue
+ * existiendo para quien lo quiera: tocar al compañero (o su flecha de borde) le pasa a ESE.
  */
-export function bestPassTarget(w: World, shooterId: string): string | null {
+export function bestPassTarget(w: World, shooterId: string, preferAngle: number | null = null): string | null {
   const s = w.skaters.find((k) => k.id === shooterId)
   if (!s) return null
-  const fwd = Math.hypot(s.vx, s.vy) > 1 ? Math.atan2(s.vy, s.vx) : s.heading
+  const fwd = preferAngle ?? (Math.hypot(s.vx, s.vy) > 1 ? Math.atan2(s.vy, s.vx) : s.heading)
   let best: string | null = null
   let bestScore = -Infinity
   for (const t of w.skaters) {
@@ -102,20 +115,21 @@ export function bestPassTarget(w: World, shooterId: string): string | null {
     const dist = Math.hypot(dx, dy)
     if (dist < 1.5) continue
     const align = Math.cos(angleDiff(fwd, Math.atan2(dy, dx)))
-    let open = 1
+    let laneOpen = true
+    let marker = Infinity // rival más cercano al receptor
     for (const o of w.skaters) {
       if (o.side === s.side) continue
       // distancia del rival al segmento del pase
       const t2 = Math.max(0, Math.min(1, ((o.x - s.x) * dx + (o.y - s.y) * dy) / (dist * dist)))
       const d = Math.hypot(o.x - (s.x + dx * t2), o.y - (s.y + dy * t2))
-      if (d < 1.4) { open = 0; break }
+      if (d < 1.4) laneOpen = false
+      marker = Math.min(marker, Math.hypot(o.x - t.x, o.y - t.y))
     }
-    // Antes esto penalizaba por igual estar CERCA o LEJOS de 12 m — un compañero pedido de
-    // verdad (el armador ofreciéndose a 4-7 m, ver `TeamAI` en ai.ts) perdía casi siempre contra
-    // cualquiera más lejos, aunque estuviera bien tapado: nunca prendía el aro verde de "pase acá".
-    // Ahora solo se castiga estar DEMASIADO lejos (pase largo, más riesgo) o pegado al cuerpo
-    // (menos de 5 m, casi sin ángulo); un compañero cercano y abierto de verdad puntúa alto.
-    const score = align * 6 + open * 8 - Math.max(0, dist - 14) * 0.4 - Math.max(0, 5 - dist) * 0.3
+    const free = laneOpen && marker >= 1.8
+    // Libre pesa más que cualquier alineación (12 > 4·2): la dirección solo ordena entre iguales.
+    // Lejos (> 14 m) o pegado (< 5 m) castiga un poco, como antes.
+    const score = (free ? 12 : laneOpen ? 4 : 0) + align * 4 + Math.min(marker, 4) * 0.5
+      - Math.max(0, dist - 14) * 0.4 - Math.max(0, 5 - dist) * 0.3
     if (score > bestScore) { bestScore = score; best = t.id }
   }
   return best

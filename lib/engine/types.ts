@@ -51,6 +51,13 @@ export interface Goalie {
   /** true en el paso donde el arquero ya reaccionó a un tiro real y está defendiéndolo — habilita
    *  la "estirada" (`GOALIE.diveReach`) en la colisión de ese mismo paso. Se recalcula cada paso. */
   diving?: boolean
+  /** Hacia qué lado se tira (+1 / -1 en Y) mientras `diving`: el lado por donde el arquero ve que
+   *  va a cruzar la bocha. La "volada" desplaza su cuerpo hacia ese lado (`GOALIE.diveShift`). */
+  diveSide?: 1 | -1
+  /** true mientras se está tirando a un tiro (sin contar el tiempo en el piso después). */
+  shotDive?: boolean
+  /** Segundos que le quedan tirado en el piso tras una volada (`GOALIE.getUpTime`). */
+  downTimer?: number
 }
 
 /** Ritmo de arquero por lado (0 lento .. 1 a fondo) — ver `WorldConfig.goalieSkill`. */
@@ -121,6 +128,14 @@ export interface WorldConfig {
    *  mueve lateral). NO cambia la técnica — reacción, standoff, estirada — que es "nivel Dios"
    *  parejo para cualquier valor. Por defecto 0.7 en los dos lados (ritmo original, sin throttle). */
   goalieSkill?: [number, number]
+  /** Ayuda al jugador por lado [local, visita] (Ronda 61, dificultad). Multiplica el cono de robo
+   *  al PORTADOR de ese lado: < 1 = el cuerpo tapa más la bocha (más difícil sacársela), > 1 = más
+   *  expuesto. Por defecto 1 (comportamiento de siempre). No toca a la IA: su lectura de juego sigue
+   *  siendo la misma en cualquier nivel. */
+  carrierShield?: [number, number]
+  /** Multiplicador de la ayuda de puntería (`assistAim`, conos de pase y de arco) por lado. Por
+   *  defecto 1. > 1 = la ayuda "engancha" pases y tiros desde más lejos del blanco. */
+  aimAssist?: [number, number]
 }
 
 export interface BenchEntry {
@@ -180,4 +195,7 @@ export interface World {
   penaltyActive: boolean
   /** Oficio de arquero por lado — ver `WorldConfig.goalieSkill`. */
   goalieSkill: GoalieSkill
+  /** Ver `WorldConfig.carrierShield` / `aimAssist`. Opcionales: sin ellos, 1 (como siempre). */
+  carrierShield?: [number, number]
+  aimAssist?: [number, number]
 }

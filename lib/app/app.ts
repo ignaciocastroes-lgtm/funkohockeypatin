@@ -70,6 +70,12 @@ const NIVELES: Array<{ value: Nivel; label: string }> = [
   { value: "dificil", label: "Difícil" },
 ]
 const NIVEL_LABEL: Record<Nivel, string> = { facil: "Fácil", normal: "Normal", dificil: "Difícil" }
+/** Qué cambia cada nivel (Ronda 61, ver `NIVEL_PROFILE` en match.ts): el rival nunca juega "más tonto". */
+const NIVEL_HINT: Record<Nivel, string> = {
+  facil: "Rival más lento y con ayudas para vos: la puntería engancha más, tu arquero vuela y te cuesta menos cuidar la bocha.",
+  normal: "El partido parejo de siempre: sin ayudas extra para nadie.",
+  dificil: "Rival a fondo y menos ayuda de puntería: tenés que apuntar de verdad y proteger la bocha con el cuerpo.",
+}
 const SWATCHES = ["#10b981", "#a855f7", "#f472b6", "#22c55e", "#f97316", "#14b8a6", "#e11d48", "#94a3b8"]
 
 /** Tres bochas de distinto peso (ver `PUCK_KINDS` en el motor): además de variedad en partido
@@ -287,6 +293,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       ),
       h("section", { class: "fp-panel", style: "display:flex;flex-direction:column;gap:14px" },
         segmented<Nivel>("Nivel del rival", "nivel", NIVELES, s.nivel, (v) => { s.nivel = v; persist(); render() }),
+        h("p", { class: "fp-note" }, NIVEL_HINT[s.nivel]),
         segmented<number>("Duración", "dur", DURATIONS.map((d) => ({ value: d, label: fmtDur(d) })), s.duration, (v) => { s.duration = v; persist(); render() }),
         segmented<string>("Dedos", "hand", [{ value: "r", label: "Diestro (mover a la izquierda)" }, { value: "l", label: "Zurdo (mover a la derecha)" }], s.leftHanded ? "l" : "r", (v) => { s.leftHanded = v === "l"; persist(); render() }),
         segmented<string>("Sonido", "snd", [{ value: "on", label: "Con sonido" }, { value: "off", label: "Silencio" }], s.sound ? "on" : "off", (v) => { s.sound = v === "on"; persist(); render() }),
@@ -1272,6 +1279,7 @@ export function mountApp(root: HTMLElement, opts: AppOptions = {}): AppHandle {
       ),
       h("section", { class: "fp-panel" },
         segmented<Nivel>("Nivel de los rivales", "cup-nivel", NIVELES, cupNivel, (v) => { cupNivel = v; render() }),
+        h("p", { class: "fp-note" }, NIVEL_HINT[cupNivel]),
       ),
       h("div", { class: "fp-sticky" },
         h("button", {

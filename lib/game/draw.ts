@@ -1,11 +1,13 @@
 import { qrMatrix } from "./qr"
 import { tr } from "./i18n"
-import { CREASE_RADIUS, GOAL, GOALS, MATCH, RINK, SKATER, bestPassTarget } from "../engine"
+import { CREASE_RADIUS, GOAL, GOALIE, GOALS, MATCH, RINK, SKATER, bestPassTarget } from "../engine"
 import type { Camera, Side, Skater, Surface, World } from "../engine"
 import { drawGlyphs } from "./glyphs"
 import { FLOOR_BASE, PLATE_BRAND_H, neonColor, goalieStickAngle, edgeAnchor, hudAvoidRects, pickCueColor, plateSize, rgb, slideOffRects } from "./cues"
 import { drawSuperTrail } from "./effects"
 import type { TrailPoint } from "./effects"
+import { deviceScale, makeLayer, pickRes } from "./layers"
+import type { Layer } from "./layers"
 
 /** Una atajada en curso, para animar la pierna que despeja (ver el bloque de porteros en
  *  `drawScene`). `ny` es la componente y de la normal de contacto — hacia qué lado patea. */
@@ -44,6 +46,9 @@ export interface DrawOptions {
    *  poco más en los momentos de tensión. Sin público (entrenamiento), se usa un valor tranquilo fijo. */
   crowdExcitement?: number
   alpha: number
+  /** Dirección del stick del humano (rad) o null si está suelto: la misma que usa el botón PASE para
+   *  elegir receptor, así el aro verde de "pase acá" coincide con el pase real. */
+  passAim?: number | null
   fontFamily: string
   /** Modo ahorro (ver `MatchOptions.graphicsSaver`): menos densidad de público y sin banderitas. */
   graphicsSaver?: boolean
@@ -146,6 +151,13 @@ function drawFloor(ctx: CanvasRenderingContext2D, surface: Surface, cam: Camera)
   const x1 = Math.min(RINK.length, Math.ceil(cam.cx + cam.width / 2) + 1)
   const y0 = Math.max(0, Math.floor(cam.cy - cam.height / 2) - 1)
   const y1 = Math.min(RINK.width, Math.ceil(cam.cy + cam.height / 2) + 1)
+  drawFloorTiles(ctx, surface, x0, x1, y0, y1)
+  ctx.restore()
+}
+
+/** Tablas/losas/baldosas + juntas del rectángulo pedido (en metros). Quien llama ya recortó a la pista. */
+function drawFloorTiles(ctx: CanvasRenderingContext2D, surface: Surface, x0: number, x1: number, y0: number, y1: number) {
+  const f = FLOOR[surface]
   if (surface === "madera") {
     // cada tabla con su propio tono (vetas): +-9 sobre el color base, ancho fijo de 0.8m
     const cell = 0.8
@@ -186,7 +198,36 @@ function drawFloor(ctx: CanvasRenderingContext2D, surface: Surface, cam: Camera)
     for (let y = Math.ceil(y0); y <= y1; y += 1) { ctx.moveTo(x0, y); ctx.lineTo(x1, y) }
   }
   ctx.stroke()
-  ctx.restore()
+}
+
+/**
+ * Piso horneado (Ronda 61, solo pista sintética — ver la llamada en `drawScene`): las baldosas no
+ * cambian nunca, así que se pintan UNA vez en un bitmap del tamaño de la pista y cada cuadro es un solo
+ * `drawImage`. Antes eran ~800 `fillRect` + un `clip` + la grilla de juntas, 60 veces por segundo. Se rehace solo si
+ * cambia la pista o el escalón de resolución (zoom de cámara / densidad de pantalla), ver `pickRes`.
+ * Devuelve false si no hay canvas fuera de pantalla (tests): ahí se usa `drawFloor` de siempre.
+ */
+let floorLayer: { key: string; surface: Surface; res: number; layer: Layer } | null = null
+function drawFloorCached(ctx: CanvasRenderingContext2D, surface: Surface): boolean {
+  const prev = floorLayer && floorLayer.surface === surface ? floorLayer.res : null
+  const res = pickRes(deviceScale(ctx), prev)
+  const key = `${surface}|${res}`
+  if (!floorLayer || floorLayer.key !== key) {
+    const layer = makeLayer(RINK.length * res, RINK.width * res)
+    if (!layer) return false
+    const g = layer.ctx
+    g.scale(layer.canvas.width / RINK.length, layer.canvas.height / RINK.width)
+    roundedRinkPath(g)
+    g.fillStyle = FLOOR[surface].base
+    g.fill()
+    g.save()
+    g.clip()
+    drawFloorTiles(g, surface, 0, RINK.length, 0, RINK.width)
+    g.restore()
+    floorLayer = { key, surface, res, layer }
+  }
+  ctx.drawImage(floorLayer.layer.canvas, 0, 0, RINK.length, RINK.width)
+  return true
 }
 
 function drawMarkings(ctx: CanvasRenderingContext2D) {
@@ -195,7 +236,9 @@ function drawMarkings(ctx: CanvasRenderingContext2D) {
   ctx.lineWidth = 0.08
   ctx.beginPath(); ctx.moveTo(L / 2, 0); ctx.lineTo(L / 2, W); ctx.stroke()
   ctx.beginPath(); ctx.arc(L / 2, W / 2, 3, 0, Math.PI * 2); ctx.stroke()
-  ctx.fillStyle = "#ff6b35"
+  // Punto central: antes naranja, del MISMO color y casi del mismo tamaño que la bocha — un señuelo
+  // justo en el medio de la pista. Ahora del color de las líneas (Ronda 61).
+  ctx.fillStyle = "rgba(0,212,255,0.75)"
   ctx.beginPath(); ctx.arc(L / 2, W / 2, 0.15, 0, Math.PI * 2); ctx.fill()
   for (const g of GOALS) {
     ctx.strokeStyle = "rgba(255,204,0,0.6)"
@@ -439,28 +482,101 @@ function drawFloorDisc(ctx: CanvasRenderingContext2D, r: number, color: string) 
   // Base floja: sin esto el tramado de abajo se ve "flotando" sin nada detrás.
   ctx.fillStyle = rgba(color, 0.09)
   ctx.fill()
-  // Tramado (cruzado, dos diagonales) flúor semitransparente — recortado al círculo con clip(),
-  // así ninguna línea se sale de la marca. Estático: sin animación ni pulso, a propósito (ver
-  // `Look.mine`: esto es para el rabillo del ojo, no para llamar la atención).
-  ctx.save()
-  ctx.clip()
+  // Tramado cruzado flúor semitransparente. Ronda 61: antes se recortaba con `clip()` y se trazaba
+  // línea por línea (~20 `stroke` por compañero, por cuadro); ahora cada línea se calcula ya
+  // cortada al círculo (cuerda) y van TODAS en un solo trazo — mismo dibujo, una sola rasterización.
   ctx.strokeStyle = rgba(color, 0.5)
   ctx.lineWidth = 0.045
+  ctx.beginPath()
   const step = R * 0.42
-  for (let off = -2 * R; off <= 2 * R; off += step) {
-    ctx.beginPath(); ctx.moveTo(off - R, -R); ctx.lineTo(off + R, R); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(off - R, R); ctx.lineTo(off + R, -R); ctx.stroke()
+  const k = Math.SQRT1_2
+  for (let t = -R + step * 0.5; t < R; t += step) {
+    const half = Math.sqrt(Math.max(0, R * R - t * t))
+    // diagonal "\": dirección (k,k), corrida t sobre la normal (k,-k)
+    ctx.moveTo(t * k - half * k, -t * k - half * k); ctx.lineTo(t * k + half * k, -t * k + half * k)
+    // diagonal "/": dirección (k,-k), corrida t sobre la normal (k,k)
+    ctx.moveTo(t * k - half * k, t * k + half * k); ctx.lineTo(t * k + half * k, t * k - half * k)
   }
-  ctx.restore()
-  // Aro neón del borde, con un resplandor angosto — el "flúor" real de la marca.
-  ctx.lineWidth = 0.09
-  ctx.strokeStyle = color
-  ctx.shadowColor = color
-  ctx.shadowBlur = 8
+  ctx.stroke()
+  // Aro neón del borde. Ronda 61: sin `shadowBlur` (un desenfoque gaussiano por compañero, por
+  // cuadro — de lo más caro que hay en canvas 2D): el "resplandor" es un trazo ancho y tenue debajo.
   ctx.beginPath()
   ctx.arc(0, 0, R, 0, Math.PI * 2)
+  ctx.strokeStyle = rgba(color, 0.25)
+  ctx.lineWidth = 0.28
+  ctx.stroke()
+  ctx.strokeStyle = color
+  ctx.lineWidth = 0.09
   ctx.stroke()
   ctx.restore()
+}
+
+/** Cabeza vista desde arriba (orejas, cara, pelo, nariz), en coordenadas locales ya giradas al rumbo. */
+function drawHead(ctx: CanvasRenderingContext2D, id: string, r: number, ppm: number) {
+  const hr = r * 0.74
+  // orejas (se ven en las fotos de referencia): van debajo; el pelo largo y los rulos las tapan
+  ctx.fillStyle = "#f2c9a8"
+  for (const side of [-1, 1]) {
+    ctx.beginPath(); ctx.ellipse(r * 0.04, side * hr * 1.0, hr * 0.15, hr * 0.23, 0, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.fillStyle = "#ffdfc4"
+  ctx.beginPath(); ctx.arc(r * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
+  drawHair(ctx, hairStyle(id), hairColor(id), hr, r, id, ppm)
+  // Sin ojos: como en las fotos de referencia es la coronilla vista desde arriba. Lo que marca hacia
+  // dónde mira es la frente y la nariz al frente (sirve para leer la dirección del jugador).
+  ctx.fillStyle = "#f2c9a8"
+  ctx.beginPath(); ctx.ellipse(r * 0.08 + hr * 1.0, 0, hr * 0.17, hr * 0.21, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.strokeStyle = "rgba(120,60,30,0.35)"
+  ctx.lineWidth = 0.03
+  ctx.beginPath(); ctx.ellipse(r * 0.08 + hr * 1.0, 0, hr * 0.17, hr * 0.21, 0, -1.2, 1.2); ctx.stroke()
+}
+
+function drawDorsal(ctx: CanvasRenderingContext2D, num: string, captain: boolean, r: number) {
+  ctx.fillStyle = "rgba(255,255,255,0.95)"
+  ctx.font = `700 ${r * 0.72}px ${"system-ui"}`
+  ctx.textAlign = "center"
+  ctx.textBaseline = "middle"
+  ctx.lineWidth = r * 0.14
+  ctx.strokeStyle = "rgba(0,0,0,0.55)"
+  ctx.strokeText(num, 0, r * 0.55)
+  ctx.fillText(num, 0, r * 0.55)
+  if (captain) {
+    ctx.fillStyle = "#fbbf24"
+    ctx.font = `${r * 0.9}px sans-serif`
+    ctx.fillText("★", 0, -r * 0.05)
+  }
+}
+
+/**
+ * Sprites horneados de piezas que no cambian (cabezas, dorsales). `ext` = medio lado en metros del
+ * cuadrado que ocupa la pieza alrededor del origen local. La resolución sale de la escala REAL del
+ * contexto (zoom × densidad de pantalla) en escalones de tercio de octava, así el zoom de la cámara no
+ * obliga a rehornear a cada cuadro. Devuelve false sin canvas fuera de pantalla (tests): ahí se dibuja
+ * vectorial como siempre.
+ */
+const spriteCache = new Map<string, HTMLCanvasElement | null>()
+function stampSprite(ctx: CanvasRenderingContext2D, id: string, ext: number, ppm: number, paint: (g: CanvasRenderingContext2D, ppmEq: number) => void): boolean {
+  if (typeof document === "undefined") return false
+  const dev = deviceScale(ctx)
+  const res = Math.min(200, Math.max(8, 2 ** (Math.round(Math.log2(dev) * 3) / 3)))
+  const key = `${id}|${res.toFixed(2)}`
+  let c = spriteCache.get(key)
+  if (c === undefined) {
+    if (spriteCache.size > 400) spriteCache.clear() // tope de memoria (cambios de zoom/equipos a lo largo de la sesión)
+    const layer = makeLayer(ext * 2 * res, ext * 2 * res)
+    c = layer ? layer.canvas : null
+    if (layer) {
+      layer.ctx.scale(layer.canvas.width / (ext * 2), layer.canvas.height / (ext * 2))
+      layer.ctx.translate(ext, ext)
+      // `ppmEq`: los mínimos de grosor "en píxeles" del dibujo (p. ej. 1.1/ppm del pelo) se calculan
+      // para la resolución del sprite, no para el zoom exacto de este cuadro.
+      paint(layer.ctx, res * (ppm / dev))
+    }
+    spriteCache.set(key, c)
+  }
+  if (!c) return false
+  ctx.drawImage(c, -ext, -ext, ext * 2, ext * 2)
+  return true
 }
 
 export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: string, alpha: number, controlled: boolean, carrying: boolean, comboTouches: number, look: Look = NO_LOOK, pantsColor?: string) {
@@ -535,12 +651,12 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
     ctx.save()
     ctx.globalAlpha = 0.85
     const beaconR = r * (1.55 + pulse * 0.25)
-    const g = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, beaconR)
-    g.addColorStop(0, rgba(look.cue, 0.55))
-    g.addColorStop(0.7, rgba(look.cue, 0.22))
-    g.addColorStop(1, rgba(look.cue, 0))
-    ctx.fillStyle = g
+    // Ronda 61: dos discos concéntricos en vez de un gradiente radial nuevo por cuadro (mismo efecto
+    // de "brilla más al centro", sin crear ni rasterizar un gradiente 60 veces por segundo).
+    ctx.fillStyle = rgba(look.cue, 0.2)
     ctx.beginPath(); ctx.arc(0, 0, beaconR, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = rgba(look.cue, 0.3)
+    ctx.beginPath(); ctx.arc(0, 0, beaconR * 0.62, 0, Math.PI * 2); ctx.fill()
     ctx.restore()
   }
   // sombra
@@ -613,39 +729,17 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
   // cabeza estilo Funko: en patines NO se usa casco (solo el arquero), así que se ve la
   // cara y, en la parte de atrás de la cabeza, el pelo (visto desde arriba).
   ctx.rotate(s.heading)
-  const hr = r * 0.74
-  // orejas (se ven en las fotos de referencia): van debajo; el pelo largo y los rulos las tapan
-  ctx.fillStyle = "#f2c9a8"
-  for (const side of [-1, 1]) {
-    ctx.beginPath(); ctx.ellipse(r * 0.04, side * hr * 1.0, hr * 0.15, hr * 0.23, 0, 0, Math.PI * 2); ctx.fill()
-  }
-  ctx.fillStyle = "#ffdfc4"
-  ctx.beginPath(); ctx.arc(r * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
-  drawHair(ctx, hairStyle(s.id), hairColor(s.id), hr, r, s.id, look.ppm)
-  // Sin ojos: como en las fotos de referencia es la coronilla vista desde arriba. Lo que marca hacia
-  // dónde mira es la frente y la nariz al frente (sirve para leer la dirección del jugador).
-  ctx.fillStyle = "#f2c9a8"
-  ctx.beginPath(); ctx.ellipse(r * 0.08 + hr * 1.0, 0, hr * 0.17, hr * 0.21, 0, 0, Math.PI * 2); ctx.fill()
-  ctx.strokeStyle = "rgba(120,60,30,0.35)"
-  ctx.lineWidth = 0.03
-  ctx.beginPath(); ctx.ellipse(r * 0.08 + hr * 1.0, 0, hr * 0.17, hr * 0.21, 0, -1.2, 1.2); ctx.stroke()
+  // Ronda 61: la cabeza (orejas, cara, PELO, nariz) no cambia nunca para un mismo jugador — se hornea
+  // una vez en un sprite y se estampa girada. El pelo era lo más caro de toda la escena: hasta ~200
+  // arcos/trazos por cabeza (rulos), con `clip`, por jugador, por cuadro.
+  if (!stampSprite(ctx, `h|${s.id}|${r}`, r * 0.08 + r * 0.74 * 1.4, look.ppm, (g, ppmEq) => drawHead(g, s.id, r, ppmEq))) drawHead(ctx, s.id, r, look.ppm)
   ctx.rotate(-s.heading)
   // dorsal: el número lo da la posición en la plantilla (L3/V5 -> "3"/"5"), abajo del cuerpo
-  // para no pelearse con la cara; el capitán además suma la estrella arriba.
-  ctx.fillStyle = "rgba(255,255,255,0.95)"
-  ctx.font = `700 ${r * 0.72}px ${"system-ui"}`
-  ctx.textAlign = "center"
-  ctx.textBaseline = "middle"
-  ctx.lineWidth = r * 0.14
-  ctx.strokeStyle = "rgba(0,0,0,0.55)"
+  // para no pelearse con la cara; el capitán además suma la estrella arriba. También horneado
+  // (Ronda 61): rasterizar texto con contorno en cada cuadro es caro y el número no cambia.
   const num = s.id.slice(1)
-  ctx.strokeText(num, 0, r * 0.55)
-  ctx.fillText(num, 0, r * 0.55)
-  if (s.isCaptain) {
-    ctx.fillStyle = "#fbbf24"
-    ctx.font = `${r * 0.9}px sans-serif`
-    ctx.fillText("★", 0, -r * 0.05)
-  }
+  const cap = !!s.isCaptain
+  if (!stampSprite(ctx, `n|${num}|${cap}|${r}`, r * 1.05, look.ppm, (g) => drawDorsal(g, num, cap, r))) drawDorsal(ctx, num, cap, r)
   if (look.mine) {
     // Anillo claro y fino, sólido (el de "lo controlás" es grueso, punteado y late): junto con el
     // disco de piso de más abajo, un segundo canal a la altura del cuerpo. Blanco para que no
@@ -664,12 +758,20 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
     ctx.strokeStyle = PASS_GREEN
     ctx.lineWidth = Math.max(0.1, 2.2 / look.ppm)
     ctx.lineCap = "round"
-    ctx.shadowColor = PASS_GREEN
-    ctx.shadowBlur = 6
+    // Ronda 61: sin `shadowBlur`; un solo trazo con los 4 arcos, y el halo es el mismo trazo más ancho y tenue.
+    ctx.beginPath()
     for (let k = 0; k < 4; k++) {
       const a = t * 1.4 + Math.PI / 4 + (k * Math.PI) / 2
-      ctx.beginPath(); ctx.arc(0, 0, R, a - 0.38, a + 0.38); ctx.stroke()
+      ctx.moveTo(Math.cos(a - 0.38) * R, Math.sin(a - 0.38) * R)
+      ctx.arc(0, 0, R, a - 0.38, a + 0.38)
     }
+    const lw = ctx.lineWidth
+    ctx.globalAlpha = 0.3
+    ctx.lineWidth = lw * 2.4
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    ctx.lineWidth = lw
+    ctx.stroke()
     ctx.restore()
   }
   if (controlled) {
@@ -689,7 +791,7 @@ export function drawSkater(ctx: CanvasRenderingContext2D, s: Skater, color: stri
   }
   if (carrying) {
     // Anillo sólido color bocha: distinto del punteado blanco de "controlado" (pueden coexistir).
-    ctx.strokeStyle = "#fb923c"
+    ctx.strokeStyle = BALL_BODY
     ctx.lineWidth = 0.07
     ctx.beginPath(); ctx.arc(0, 0, r + 0.1, 0, Math.PI * 2); ctx.stroke()
   }
@@ -842,9 +944,137 @@ function crestSprite(crest: string, fontFamily: string): HTMLCanvasElement | nul
   return out
 }
 
+/**
+ * Tribuna horneada (Ronda 61) — el cambio de fondo en cómo se dibuja el público.
+ *
+ * Antes: cada cuadro se rasterizaba cada hincha (un `arc` por punto, cientos en la vista completa) más
+ * las banderitas, todo con su rebote calculado en vivo. Con la cámara en "cancha completa" eso era lo
+ * más caro de toda la escena, y el primer sospechoso de las caídas de FPS en el teléfono.
+ *
+ * Ahora: cada una de las 4 bandas de tribuna se pinta UNA vez en `CROWD_FRAMES` bitmaps — el mismo
+ * público en 6 instantes de su rebote (como los cuadros de un dibujo animado). Cada cuadro de juego
+ * estampa el instante que toca y funde encima el siguiente (`globalAlpha`), así el saltito se ve
+ * continuo y no a tirones. Costo por cuadro: ≤ 8 `drawImage`, sin importar cuánta gente haya.
+ *
+ * El entusiasmo (`excitement`) ya no estira el salto (eso obligaría a hornear más variantes): acelera
+ * el ritmo — tribuna tranquila = vaivén lento, momento caliente = la gente saltando rápido.
+ */
+const CROWD_FRAMES = 6
+const CROWD_BAKE_BOB = 0.12
+const CROWD_BAKE_PAD = 0.32
+const CROWD_RES_CAP = 36
+interface BakedBand { x0: number; y0: number; w: number; h: number; frames: HTMLCanvasElement[] }
+let crowdBake: { key: string; res: number; bands: BakedBand[] } | null = null
+let crowdClock = 0
+let crowdClockLast = -1
+
+function bakeCrowd(res: number, saver: boolean, crests: [string, string], palette: string[], excludeBand: number | null, fontFamily: string): BakedBand[] | null {
+  const spacing = saver ? FAN_SPACING_SAVER : FAN_SPACING
+  const bandRects = [
+    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: -STANDS_DEPTH, by1: 0 },
+    { bx0: -STANDS_DEPTH, bx1: RINK.length + STANDS_DEPTH, by0: RINK.width, by1: RINK.width + STANDS_DEPTH },
+    { bx0: -STANDS_DEPTH, bx1: 0, by0: 0, by1: RINK.width },
+    { bx0: RINK.length, bx1: RINK.length + STANDS_DEPTH, by0: 0, by1: RINK.width },
+  ]
+  const out: BakedBand[] = []
+  for (let bandIdx = 0; bandIdx < bandRects.length; bandIdx++) {
+    if (bandIdx === excludeBand) continue
+    const b = bandRects[bandIdx]
+    // Mismos puntos que el dibujo vectorial (misma grilla + hash): el público no "cambia de gente".
+    const dots: Array<CrowdDot & { color: number; alpha: number; crest?: string }> = []
+    const i0 = Math.floor(b.bx0 / spacing), i1 = Math.ceil(b.bx1 / spacing)
+    const j0 = Math.floor(b.by0 / spacing), j1 = Math.ceil(b.by1 / spacing)
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        const h = fanHash(i, j)
+        const fx = i * spacing + (h - 0.5) * 0.2
+        const fy = j * spacing + (fanHash(j, i) - 0.5) * 0.2
+        if (fx < b.bx0 || fx > b.bx1 || fy < b.by0 || fy > b.by1) continue
+        const phase = h * Math.PI * 2
+        const weight = 0.5 + 0.5 * fanHash(j, i)
+        const flag = !saver && fanHash(i + 7, j + 3) < 0.1
+        dots.push({
+          x: fx, baseY: fy, phase, weight,
+          color: Math.floor(h * palette.length) % palette.length,
+          alpha: 0.5 + 0.28 * fanHash(i + 1, j + 1),
+          crest: flag ? crests[fanHash(i + 3, j + 7) < 0.5 ? 0 : 1] : undefined,
+        })
+      }
+    }
+    const x0 = b.bx0 - CROWD_BAKE_PAD, y0 = b.by0 - CROWD_BAKE_PAD - CROWD_BAKE_BOB
+    const w = b.bx1 - b.bx0 + CROWD_BAKE_PAD * 2, h = b.by1 - b.by0 + CROWD_BAKE_PAD * 2 + CROWD_BAKE_BOB
+    const frames: HTMLCanvasElement[] = []
+    for (let k = 0; k < CROWD_FRAMES; k++) {
+      const layer = makeLayer(w * res, h * res)
+      if (!layer) return null
+      const g = layer.ctx
+      g.scale(layer.canvas.width / w, layer.canvas.height / h)
+      g.translate(-x0, -y0)
+      const theta = (k / CROWD_FRAMES) * Math.PI
+      const yOf = (d: CrowdDot) => d.baseY - Math.abs(Math.sin(theta + d.phase)) * CROWD_BAKE_BOB * d.weight
+      for (let c = 0; c < palette.length; c++) {
+        g.fillStyle = palette[c]
+        for (const a of [0.55, 0.7]) {
+          g.globalAlpha = a
+          g.beginPath()
+          for (const d of dots) {
+            if (d.crest || d.color !== c || (d.alpha < 0.64) !== (a === 0.55)) continue
+            const yy = yOf(d)
+            g.moveTo(d.x + 0.15, yy); g.arc(d.x, yy, 0.15, 0, Math.PI * 2)
+          }
+          g.fill()
+        }
+      }
+      g.globalAlpha = 0.72
+      for (const d of dots) {
+        if (!d.crest) continue
+        const spr = crestSprite(d.crest, fontFamily)
+        if (spr) g.drawImage(spr, d.x - 0.275, yOf(d) - 0.275, 0.55, 0.55)
+      }
+      frames.push(layer.canvas)
+    }
+    out.push({ x0, y0, w, h, frames })
+  }
+  return out
+}
+
+function drawCrowdBaked(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean, palette: string[], excludeBand: number | null): boolean {
+  const prevRes = crowdBake ? crowdBake.res : null
+  const res = pickRes(deviceScale(ctx), prevRes, saver ? 28 : CROWD_RES_CAP)
+  const key = `${res}|${saver}|${crests[0]}|${crests[1]}|${palette.join(",")}|${excludeBand}|${fontFamily}`
+  if (!crowdBake || crowdBake.key !== key) {
+    const bands = bakeCrowd(res, saver, crests, palette, excludeBand, fontFamily)
+    if (!bands) return false
+    crowdBake = { key, res, bands }
+  }
+  // Reloj propio del rebote: avanza más rápido con más entusiasmo (sin saltos al cambiar el ritmo).
+  const dt = crowdClockLast < 0 ? 0 : Math.max(0, Math.min(0.1, now - crowdClockLast))
+  crowdClockLast = now
+  crowdClock += dt * 3.1 * (0.45 + 0.9 * Math.max(0, Math.min(1, excitement)))
+  const u = ((crowdClock / Math.PI) % 1) * CROWD_FRAMES
+  const k = Math.floor(u) % CROWD_FRAMES
+  const f = u - Math.floor(u)
+  const vx0 = cam.cx - cam.width / 2, vx1 = cam.cx + cam.width / 2
+  const vy0 = cam.cy - cam.height / 2, vy1 = cam.cy + cam.height / 2
+  ctx.save()
+  for (const b of crowdBake.bands) {
+    if (b.x0 > vx1 || b.x0 + b.w < vx0 || b.y0 > vy1 || b.y0 + b.h < vy0) continue // fuera de cuadro
+    ctx.globalAlpha = 1
+    ctx.drawImage(b.frames[k], b.x0, b.y0, b.w, b.h)
+    if (f > 0.04) {
+      ctx.globalAlpha = f
+      ctx.drawImage(b.frames[(k + 1) % CROWD_FRAMES], b.x0, b.y0, b.w, b.h)
+    }
+  }
+  ctx.restore()
+  return true
+}
+
 /** `palette`/`excludeBand` son solo para el Cantoni (ver `drawCantoniArena`): la tribuna genérica
  *  siempre llama esto con `FAN_PALETTE` y sin excluir ninguna banda. */
 function drawCrowdStands(ctx: CanvasRenderingContext2D, cam: Camera, excitement: number, now: number, crests: [string, string], fontFamily: string, saver: boolean, palette: string[] = FAN_PALETTE, excludeBand: number | null = null) {
+  if (drawCrowdBaked(ctx, cam, excitement, now, crests, fontFamily, saver, palette, excludeBand)) return
+  // Sin canvas fuera de pantalla (tests en Node): el dibujo vectorial de siempre, punto por punto.
   const spacing = crowdSpacing(cam.ppm, saver)
   const { buckets, flags } = crowdLayout(cam, spacing, saver, crests, palette, excludeBand)
   const bob = 0.05 + 0.18 * Math.max(0, Math.min(1, excitement))
@@ -966,11 +1196,11 @@ function drawEntranceScreen(ctx: CanvasRenderingContext2D, now: number, fontFami
   const w = showQr ? 3.1 : 1.7, h = showQr ? 1.5 : 1.0
   const flicker = 0.75 + 0.25 * Math.sin(now * 1.3)
   ctx.save()
-  ctx.shadowColor = "#38bdf8"
-  ctx.shadowBlur = 6
+  // Brillo de pantalla sin `shadowBlur` (Ronda 61): un marco celeste tenue alrededor.
+  ctx.fillStyle = "rgba(56,189,248,0.28)"
+  ctx.fillRect(cx - w / 2 - 0.12, cy - h / 2 - 0.12, w + 0.24, h + 0.24)
   ctx.fillStyle = "#0f172a"
   ctx.fillRect(cx - w / 2, cy - h / 2, w, h)
-  ctx.shadowBlur = 0
   ctx.globalAlpha = flicker
   ctx.fillStyle = "#38bdf8"
   ctx.font = `700 0.34px ${fontFamily}, system-ui`
@@ -1008,6 +1238,79 @@ function drawCantoniArena(ctx: CanvasRenderingContext2D, cam: Camera, excitement
 }
 
 
+/** Hitbox del arquero (cuerpo, sin el radio de la bocha) para una estirada `amt` 0..1 hacia `side`,
+ *  en coordenadas locales: el MISMO que usa el motor (bloque porteros de `updatePuck`) con amt = 1. */
+export function goalieHitbox(R: number, amt: number, side: 1 | -1) {
+  const a = Math.max(0, Math.min(1, amt))
+  return { cy: side * GOALIE.diveShift * a, rx: R * (1 - (1 - GOALIE.diveDepth) * a), ry: R + GOALIE.diveReach * a }
+}
+
+/** Centro más lejano posible, sobre el eje Y (lado `dir`), para un círculo de radio r que tiene que
+ *  caber en la elipse `hb` estando corrido `x` en X. Elipse interior (rx−r, ry−r): vale mientras el
+ *  radio de curvatura de la punta (rx²/ry) sea mayor que r — lo blinda `goalie-pose.test.ts`. */
+function fitY(hb: { cy: number; rx: number; ry: number }, x: number, r: number, dir: 1 | -1, margin = 0.02): number {
+  const k = Math.sqrt(Math.max(0, 1 - (x / Math.max(1e-6, hb.rx - r)) ** 2))
+  return hb.cy + dir * Math.max(0, (hb.ry - r) * k - margin)
+}
+
+export interface GoalieShapeEllipse { x: number; y: number; rx: number; ry: number }
+export interface GoalieShapeCircle { x: number; y: number; r: number }
+export interface GoalieShapeCapsule { x0: number; y0: number; x1: number; y1: number; w: number }
+
+/**
+ * Pose del arquero en coordenadas locales (+y a lo largo del arco, +x = `dirX` hacia la cancha).
+ * Ronda 61, a pedido de Ignacio: el arquero de hockey patín no se "abre de piernas" en el lugar; se
+ * TIRA AL PISO DE COSTADO hacia el lado del tiro (volada: pads apilados adelante, cuerpo tendido,
+ * casco atrás) y despeja pegándole con el palo. Parado (`amt` < 0.3) es la postura de siempre.
+ * TODO lo que devuelve cabe dentro de `goalieHitbox` — lo blinda `tests/game/goalie-pose.test.ts`.
+ */
+export function goalieDivePose(R: number, amt: number, side: 1 | -1, dirX: number) {
+  const hb = goalieHitbox(R, amt, side)
+  const lying = amt >= 0.3
+  if (!lying) {
+    const footR = R * 0.24
+    return {
+      hb, lying,
+      torso: { x: 0, y: hb.cy, rx: hb.rx, ry: hb.ry } as GoalieShapeEllipse,
+      shoulders: [-1, 1].map((d) => ({ x: 0, y: hb.cy + d * hb.ry * 0.68, rx: R * 0.34, ry: R * 0.22 })) as GoalieShapeEllipse[],
+      pads: [] as GoalieShapeCapsule[],
+      skates: [-1, 1].map((d) => ({ x: -dirX * R * 0.12, y: hb.cy + d * R * 0.62, rx: footR, ry: R * 0.15 })) as GoalieShapeEllipse[],
+      glove: null as GoalieShapeCircle | null,
+      helmet: { x: dirX * R * 0.08, y: hb.cy, r: R * 0.62 } as GoalieShapeCircle,
+    }
+  }
+  // Tendido: pads (piernas) hacia el lado del tiro, tronco en el medio, casco atrás.
+  const padW = R * 0.26
+  const pads = [-1, 1].map((d) => {
+    const x = d * R * 0.17
+    return { x0: x, y0: hb.cy - side * hb.ry * 0.1, x1: x, y1: fitY(hb, x, padW / 2, side), w: padW }
+  })
+  const skates = pads.map((pd) => ({ x: pd.x1, y: pd.y1, rx: padW * 0.42, ry: padW * 0.42 }))
+  const torso = { x: 0, y: hb.cy - side * hb.ry * 0.18, rx: hb.rx * 0.82, ry: hb.ry * 0.48 }
+  // El casco tiene que entrar en la punta de la elipse: radio ≤ radio de curvatura ahí (rx²/ry).
+  const hr = Math.min(R * 0.62, 0.9 * (hb.rx * hb.rx) / hb.ry)
+  const helmet = { x: dirX * R * 0.04, y: fitY(hb, dirX * R * 0.04, hr, (-side) as 1 | -1), r: hr }
+  // Guante de atrapar arriba, del lado de la cancha (el brazo libre; el otro lleva el palo).
+  const gr = R * 0.22
+  const gdy = side * hb.ry * 0.05
+  const gx = dirX * Math.max(0, (hb.rx - gr) * Math.sqrt(Math.max(0, 1 - (gdy / (hb.ry - gr)) ** 2)) - 0.03)
+  const glove = { x: gx, y: hb.cy + gdy, r: gr }
+  return { hb, lying, torso, shoulders: [] as GoalieShapeEllipse[], pads, skates, glove, helmet }
+}
+
+/** Estirada visible del arquero, suavizada por lado (solo dibujo): sube rápido cuando el motor marca
+ *  `diving` (≈90 ms) y vuelve más despacio (≈180 ms), sin saltos de un cuadro a otro. */
+const diveSmooth: [number, number] = [0, 0]
+const diveSmoothAt: [number, number] = [0, 0]
+function goalieDiveSmooth(side: Side, target: number): number {
+  const now = performance.now()
+  const dt = diveSmoothAt[side] ? Math.min(0.1, (now - diveSmoothAt[side]) / 1000) : 0
+  diveSmoothAt[side] = now
+  const tau = target > diveSmooth[side] ? 0.03 : 0.06
+  diveSmooth[side] += (target - diveSmooth[side]) * (1 - Math.exp(-dt / tau))
+  return diveSmooth[side]
+}
+
 export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, o: DrawOptions) {
   const { alpha } = o
   ctx.fillStyle = "#050914"
@@ -1020,7 +1323,9 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
 
   if (o.venue === "cantoni") drawCantoniArena(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000, o.crests, o.fontFamily, !!o.graphicsSaver)
   else drawCrowdStands(ctx, cam, o.crowdExcitement ?? 0.15, performance.now() / 1000, o.crests, o.fontFamily, !!o.graphicsSaver)
-  drawFloor(ctx, w.surface, cam)
+  // Solo la pista sintética se hornea: son ~800 baldosas de 1x1 (medido: en vista completa costaba más
+  // que todo el resto de la escena). Madera y cemento son pocas piezas grandes — vectorial es más barato.
+  if (!(w.surface === "sintetico" && drawFloorCached(ctx, w.surface))) drawFloor(ctx, w.surface, cam)
   drawMarkings(ctx)
   drawGoals(ctx)
   drawBoards(ctx)
@@ -1030,9 +1335,12 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
   const p = w.puck
   const pxp = lerp(p.px, p.x, alpha)
   const pyp = lerp(p.py, p.y, alpha)
-  const pr = Math.max(p.radius, 4 / cam.ppm)
+  // Ronda 61: tamaño mínimo EN PANTALLA de la bocha. Antes era max(radio, 4px)·0.62 ≈ 2.5 px de radio
+  // (¡5 px de diámetro!) — de ahí buena parte del "no sé dónde está". Ahora nunca baja de ~4.5 px de
+  // radio (~11 px de diámetro, ~14 con el contorno), sin importar el zoom.
+  const bpr = Math.max(p.radius * 0.62, BALL_MIN_PX / cam.ppm)
   ctx.fillStyle = "rgba(0,0,0,0.35)"
-  ctx.beginPath(); ctx.ellipse(pxp + 0.03, pyp + 0.05, pr * 0.62 * 1.05, pr * 0.62 * 0.85, 0, 0, Math.PI * 2); ctx.fill()
+  ctx.beginPath(); ctx.ellipse(pxp + bpr * 0.35, pyp + bpr * 0.5, bpr * 1.1, bpr * 0.9, 0, 0, Math.PI * 2); ctx.fill()
 
   // porteros: el ÚNICO que usa casco y protecciones en hockey sobre patines
   for (const g of w.goalies) {
@@ -1064,125 +1372,100 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     ctx.translate(gx, gy)
     const save = o.goalieSave?.[g.side]
     const saveAgeMs = save ? performance.now() - save.startedAt : Infinity
-    // 0 → 1 → 0 a lo largo de la ventana: todo el cuerpo se tira y vuelve, no se queda pegado afuera.
-    const diveAmt = saveAgeMs < GOALIE_KICK_MS ? Math.sin((saveAgeMs / GOALIE_KICK_MS) * Math.PI) : 0
-    const diveSide: 1 | -1 = (save?.ny ?? 0) >= 0 ? 1 : -1
+    // Ronda 61 — volada honesta (ver `goalieDivePose`): el cuerpo solo se tira mientras el motor lo
+    // tiene tirado (`g.diving`, que incluye el rato en el piso hasta levantarse), hacia el lado que eligió
+    // el motor (`g.diveSide`). Suavizado ~90 ms para que no sea un salto de un cuadro.
+    const diveAmt = goalieDiveSmooth(g.side, g.diving ? 1 : 0)
+    const diveSide: 1 | -1 = g.diveSide ?? (pyp - gy >= 0 ? 1 : -1)
     const R = g.radius
-    // palo: el arquero de hockey patín también juega con stick, y es el MISMO reglamentario que el de los
-    // jugadores (Art. 16.6 del Reglamento Técnico de World Skate: de 90 a 115 cm, madera o plástico, base
-    // plana, debe pasar por un aro de 5 cm — nada de la paleta ancha del hockey hielo). Sigue a la pelota
-    // en el mundo real (no acompaña la pose de la atajada): va FUERA del giro del cuerpo, a propósito.
-    const sa = goalieStickAngle(facing, 0, 0, pxp - gx, pyp - gy)
+    const dirX = Math.cos(facing)
+    const pose = goalieDivePose(R, diveAmt, diveSide, dirX)
+    // Palo: reglamentario, el mismo que el de los jugadores (90-115 cm). Sigue a la bocha y en la
+    // atajada o el despeje hace el GOLPE: barre hacia afuera (`save.ny`) — el arquero le pega a la
+    // bocha con el palo para sacarla lejos (Art. 12.2: ataja con el cuerpo, juega con el palo). No es
+    // parte del hitbox: el palo no ataja, golpea.
+    const swingT = saveAgeMs < GOALIE_KICK_MS ? saveAgeMs / GOALIE_KICK_MS : 1
+    const swing = swingT < 1 ? Math.sin(swingT * Math.PI) * 0.9 * ((save?.ny ?? 0) >= 0 ? 1 : -1) * -dirX : 0
+    const sa = goalieStickAngle(facing, 0, 0, pxp - gx, pyp - gy) + swing
+    const handY = pose.lying ? pose.torso.y + diveSide * pose.torso.ry * 0.6 : 0
     ctx.strokeStyle = "#8b5a2b"
     ctx.lineWidth = 0.1
     ctx.lineCap = "round"
     ctx.beginPath()
-    ctx.moveTo(Math.cos(sa) * R * 0.5, Math.sin(sa) * R * 0.5)
-    ctx.lineTo(Math.cos(sa) * (R + 0.62), Math.sin(sa) * (R + 0.62))
+    ctx.moveTo(Math.cos(sa) * R * 0.5, handY + Math.sin(sa) * R * 0.5)
+    ctx.lineTo(Math.cos(sa) * (R + 0.62), handY + Math.sin(sa) * (R + 0.62))
     ctx.stroke()
-    // Todo el cuerpo (piernas, tronco, brazo, casco) gira JUNTO, en el mismo eje: un solo gesto de
-    // tirarse al piso — antes la pierna vivía en un sistema de coordenadas y el tronco en otro
-    // (rotado), y terminaban sin alinear. `diveAmt`/`diveSide` son los mismos números para las dos
-    // piernas, el brazo y el tronco.
     ctx.save()
-    ctx.rotate(diveSide * diveAmt * 0.5)
-    // sombra: se alarga con el cuerpo en la atajada (queda de costado sobre el piso, no parado)
+    const hb = pose.hb
+    // sombra = el hitbox, apenas corrida
     ctx.fillStyle = "rgba(0,0,0,0.35)"
-    ctx.beginPath()
-    ctx.ellipse(0.05, 0.1, R * (1.05 - diveAmt * 0.15), R * (0.9 + diveAmt * 1.5), 0, 0, Math.PI * 2)
-    ctx.fill()
-    // Piernas: antes el arquero no las tenía dibujadas (solo el palo se movía para atajar). Un
-    // arquero de hockey patín SÍ patea para cerrar el ángulo abajo — dos pies quietos y bien
-    // separados en reposo (base ancha); en la atajada una pierna se dobla hacia el centro (pivote)
-    // y la OTRA se estira a fondo hacia el lado del tiro — con el MUSLO dibujado, no solo el pie
-    // flotando suelto, para que se lea como una patada de verdad y no una mancha aparte.
-    const pivotLen = R * (0.68 - diveAmt * 0.35)
-    const kickLen = R * (0.68 + diveAmt * 2.0)
-    const legs: Array<{ len: number; side: 1 | -1 }> = [
-      { len: pivotLen, side: diveSide === 1 ? -1 : 1 },
-      { len: kickLen, side: diveSide },
-    ]
-    ctx.strokeStyle = c
-    ctx.lineWidth = R * 0.34
-    ctx.lineCap = "round"
-    for (const { len, side } of legs) {
-      ctx.beginPath()
-      ctx.moveTo(0, side * R * 0.15)
-      ctx.lineTo(-R * 0.12, side * len)
-      ctx.stroke()
+    ctx.beginPath(); ctx.ellipse(0.05, hb.cy + 0.1, hb.rx, hb.ry, 0, 0, Math.PI * 2); ctx.fill()
+    // pads de pierna (tendido): blancos, apilados hacia el lado del tiro
+    for (const pd of pose.pads) {
+      ctx.strokeStyle = "rgba(0,0,0,0.55)"
+      ctx.lineWidth = pd.w + 0.05
+      ctx.lineCap = "round"
+      ctx.beginPath(); ctx.moveTo(pd.x0, pd.y0); ctx.lineTo(pd.x1, pd.y1); ctx.stroke()
+      ctx.strokeStyle = "#e7eaef"
+      ctx.lineWidth = pd.w
+      ctx.beginPath(); ctx.moveTo(pd.x0, pd.y0); ctx.lineTo(pd.x1, pd.y1); ctx.stroke()
     }
-    ctx.fillStyle = "#27272a"
-    for (const { len, side } of legs) {
-      ctx.beginPath(); ctx.ellipse(-R * 0.12, side * len, R * 0.24, R * 0.15, 0, 0, Math.PI * 2); ctx.fill()
+    // patines
+    for (const f of pose.skates) {
+      ctx.fillStyle = "#27272a"
+      ctx.beginPath(); ctx.ellipse(f.x, f.y, f.rx, f.ry, 0, 0, Math.PI * 2); ctx.fill()
+      if (!pose.lying) {
+        ctx.fillStyle = "#a1a1aa"
+        ctx.beginPath(); ctx.arc(f.x - R * 0.11, f.y, R * 0.045, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.arc(f.x + R * 0.11, f.y, R * 0.045, 0, Math.PI * 2); ctx.fill()
+      }
     }
-    ctx.fillStyle = "#a1a1aa"
-    for (const { len, side } of legs) {
-      ctx.beginPath(); ctx.arc(-R * 0.12 - R * 0.11, side * len, R * 0.045, 0, Math.PI * 2); ctx.fill()
-      ctx.beginPath(); ctx.arc(-R * 0.12 + R * 0.11, side * len, R * 0.045, 0, Math.PI * 2); ctx.fill()
-    }
-    // Cuerpo entero: el "mono porfiado" de base ancha y rodillas flexionadas (postura de espera)
-    // deja de ser un círculo rígido apenas sale la atajada — se estira de costado hacia el lado del
-    // tiro (torso alargado + inclinado, todo en el plano de la pista, ya que la cámara es cenital),
-    // como un arquero de verdad tirándose al piso.
-    const bodyRx = R * (1 - diveAmt * 0.3)
-    const bodyRy = R * (1 + diveAmt * 1.1)
-    // peto/cuerpo (color de equipo, más voluminoso que un patinador: ya lo transmite el radio)
+    // peto/tronco (color de equipo)
+    const t = pose.torso
     ctx.fillStyle = c
-    ctx.beginPath(); ctx.ellipse(0, 0, bodyRx, bodyRy, 0, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.ellipse(t.x, t.y, t.rx, t.ry, 0, 0, Math.PI * 2); ctx.fill()
     ctx.strokeStyle = "rgba(0,0,0,0.6)"
     ctx.lineWidth = 0.06
-    ctx.beginPath(); ctx.ellipse(0, 0, bodyRx, bodyRy, 0, 0, Math.PI * 2); ctx.stroke()
-    // hombreras: dos almohadillas claras a los lados, para que se lea "equipado" — se separan con
-    // el estiramiento, como el resto del cuerpo.
-    ctx.fillStyle = "rgba(230,233,238,0.95)"
-    ctx.beginPath(); ctx.ellipse(0, -bodyRy * 0.8, R * 0.36, R * 0.24, 0, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.ellipse(0, bodyRy * 0.8, R * 0.36, R * 0.24, 0, 0, Math.PI * 2); ctx.fill()
-    ctx.strokeStyle = "rgba(0,0,0,0.35)"
-    ctx.lineWidth = 0.03
     ctx.stroke()
-    // Brazo/guante: mismo criterio que la pierna — el ANTEBRAZO se dibuja (no solo la mano
-    // flotando). Sale del hombro del lado del tiro y llega más lejos que la pierna: la mano de
-    // verdad es la que llega a la esquina.
-    if (diveAmt > 0.02) {
-      const armLen = R * (0.5 + diveAmt * 1.9)
-      const shoulderY = diveSide * bodyRy * 0.75
-      const gx2 = -R * 0.1
-      const gy2 = diveSide * armLen
+    // hombreras (parado)
+    ctx.fillStyle = "rgba(230,233,238,0.95)"
+    for (const sh of pose.shoulders) { ctx.beginPath(); ctx.ellipse(sh.x, sh.y, sh.rx, sh.ry, 0, 0, Math.PI * 2); ctx.fill() }
+    // guante de atrapar (tendido): arriba, del lado de la cancha
+    if (pose.glove) {
+      const gl = pose.glove
       ctx.strokeStyle = "rgba(230,233,238,0.95)"
-      ctx.lineWidth = R * 0.26
+      ctx.lineWidth = R * 0.2
       ctx.lineCap = "round"
-      ctx.beginPath()
-      ctx.moveTo(0, shoulderY)
-      ctx.lineTo(gx2, gy2)
-      ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(t.x, t.y); ctx.lineTo(gl.x, gl.y); ctx.stroke()
       ctx.fillStyle = "#e7eaef"
-      ctx.beginPath(); ctx.arc(gx2, gy2, R * 0.3, 0, Math.PI * 2); ctx.fill()
+      ctx.beginPath(); ctx.arc(gl.x, gl.y, gl.r, 0, Math.PI * 2); ctx.fill()
       ctx.strokeStyle = "rgba(0,0,0,0.5)"
       ctx.lineWidth = 0.035
       ctx.stroke()
     }
-    // casco: cúpula rígida que cubre toda la cabeza, con rejilla/máscara al frente
+    // casco: cúpula rígida con rejilla al frente (mira a la cancha, también tendido)
+    const hm = pose.helmet
+    ctx.save()
+    ctx.translate(hm.x, hm.y)
     ctx.rotate(facing)
-    const hr = R * 0.62
+    const hr = hm.r
     ctx.fillStyle = "#e7eaef"
-    ctx.beginPath(); ctx.arc(R * 0.08, 0, hr, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.arc(0, 0, hr, 0, Math.PI * 2); ctx.fill()
     ctx.strokeStyle = "rgba(0,0,0,0.55)"
     ctx.lineWidth = 0.045
     ctx.stroke()
-    // banda de color del equipo en el casco
     ctx.strokeStyle = c
     ctx.lineWidth = hr * 0.28
-    ctx.beginPath(); ctx.arc(R * 0.08, 0, hr * 0.78, Math.PI * 0.82, Math.PI * 1.18); ctx.stroke()
-    // rejilla de la máscara sobre la cara
+    ctx.beginPath(); ctx.arc(0, 0, hr * 0.78, Math.PI * 0.82, Math.PI * 1.18); ctx.stroke()
     ctx.strokeStyle = "rgba(20,20,20,0.7)"
     ctx.lineWidth = 0.035
-    for (const t of [-0.5, 0, 0.5]) {
+    for (const k of [-0.5, 0, 0.5]) {
       ctx.beginPath()
-      ctx.moveTo(R * 0.08 + hr * 0.1, hr * t)
-      ctx.lineTo(R * 0.08 + hr * 0.98, hr * t)
+      ctx.moveTo(hr * 0.1, hr * k)
+      ctx.lineTo(hr * 0.98 * Math.sqrt(1 - k * k), hr * k)
       ctx.stroke()
     }
-    ctx.rotate(-facing)
+    ctx.restore()
     ctx.restore()
     if (w.defCombo && w.defCombo.side === g.side && w.defCombo.touches > 0) {
       // Defensa armándose (la atajada garantizada): el arquero es quien la cobra, el aro late en él.
@@ -1207,7 +1490,9 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     ? w.skaters.find((k) => k.id === w.puck.carrierId && k.side === hs)
     : undefined
   // A quién iría el toque suelto (pase automático): solo mientras yo llevo la bocha.
-  const passId = humanCarrier ? bestPassTarget(w, humanCarrier.id) : null
+  // Mismo criterio y misma dirección que el botón PASE (`passAim` = el stick): el aro verde marca
+  // exactamente a quién va a ir el pase si apretás ahora.
+  const passId = humanCarrier ? bestPassTarget(w, humanCarrier.id, o.passAim ?? null) : null
   const passTo = passId ? w.skaters.find((k) => k.id === passId) : undefined
   if (humanCarrier && passTo) {
     // hilo tenue del portador al receptor: se ve el carril del pase
@@ -1237,48 +1522,148 @@ export function drawScene(ctx: CanvasRenderingContext2D, w: World, cam: Camera, 
     drawSkater(ctx, s, o.colors[s.side], alpha, controlled, s.id === w.puck.carrierId, comboTouches, look, o.pantsColors?.[s.side])
   }
 
-  // bocha (no disco de NHL, y NO una pelota de básquet): esfera chica y dura, sin el borde negro
-  // grueso que la hace leer como básquetbol — un brillo angosto y compacto, nomás.
-  const bpr = pr * 0.62
-  // Súper tiro en vuelo: la pelota se ve "encendida" (núcleo claro, aro caliente alrededor) — deja
-  // de estar encendida en cuanto alguien la recupera (`Puck.superShot` se apaga en `giveTo`, ver
-  // world.ts), así que acá alcanza con leer el booleano, sin estado nuevo del lado del dibujo.
-  const lit = w.puck.superShot && !w.puck.carrierId
-  if (lit) {
-    const t = performance.now() / 1000
-    const flicker = 0.75 + 0.25 * Math.sin(t * 26) * Math.sin(t * 11 + 1)
-    ctx.save()
-    const glowR = bpr * (2.8 + flicker * 0.6)
-    const g = ctx.createRadialGradient(pxp, pyp, bpr * 0.4, pxp, pyp, glowR)
-    g.addColorStop(0, "rgba(255,241,150,0.85)")
-    g.addColorStop(0.4, "rgba(251,146,60,0.55)")
-    g.addColorStop(1, "rgba(239,68,68,0)")
-    ctx.fillStyle = g
-    ctx.beginPath(); ctx.arc(pxp, pyp, glowR, 0, Math.PI * 2); ctx.fill()
-    ctx.restore()
-  }
-  if (w.puck.carrierId) {
-    // Imán al palo: mientras alguien la controla, un resplandor suave y quieto (no pulsa — lo que
-    // ya pulsa es el beacon del jugador controlado, esto es otra señal) que la "pega" visualmente
-    // a la pala del palo, para que se lea que está imantada y no solo apoyada.
-    ctx.save()
-    ctx.globalAlpha = 0.5
-    ctx.fillStyle = "#7dd3fc"
-    ctx.beginPath(); ctx.arc(pxp, pyp, bpr * 2.1, 0, Math.PI * 2); ctx.fill()
-    ctx.restore()
-  }
-  ctx.fillStyle = lit ? "#fb923c" : "#9a3412"
-  ctx.beginPath(); ctx.arc(pxp, pyp, bpr, 0, Math.PI * 2); ctx.fill()
-  ctx.fillStyle = lit ? "#fef08a" : "#ea580c"
-  ctx.beginPath(); ctx.arc(pxp, pyp, bpr * 0.92, 0, Math.PI * 2); ctx.fill()
-  ctx.fillStyle = "rgba(255,255,255,0.65)"
-  ctx.beginPath(); ctx.ellipse(pxp - bpr * 0.3, pyp - bpr * 0.3, bpr * 0.22, bpr * 0.14, -0.6, 0, Math.PI * 2); ctx.fill()
-  ctx.strokeStyle = "rgba(0,0,0,0.28)"
-  ctx.lineWidth = bpr * 0.1
-  ctx.beginPath(); ctx.arc(pxp, pyp, bpr * 0.97, 0, Math.PI * 2); ctx.stroke()
+  drawBall(ctx, w, cam, pxp, pyp, bpr, live)
   ctx.restore()
 
   if (hs !== null && live) drawTeammateEdges(ctx, w, cam, o, o.controlledId, o.colors[hs], passId, alpha)
+}
+
+/**
+ * La bocha (Ronda 61). Pedido: "darle algo para que se vea, es difícil saber dónde está" — y que eso
+ * NO baje los FPS (lo que ya había pasado con efectos anteriores). Todo lo de acá son círculos y
+ * trazos planos: cero `shadowBlur`, cero gradientes, cero `clip`. Capas, de abajo hacia arriba:
+ *
+ *  1. Estela: cuando viaja rápido deja una cola blanca que se afina y se apaga (los últimos ~10
+ *     cuadros). Dice "por acá pasó y hacia allá va" — en un tiro fuerte el ojo la sigue aunque la
+ *     bocha misma dure 2 cuadros en un lugar.
+ *  2. Sonar: suelta (nadie la lleva) emite un aro que se expande y se apaga, una vez por segundo.
+ *     Es lo que la encuentra el ojo de reojo cuando quedó entre piernas o contra la valla.
+ *  3. La bocha: amarillo flúor con contorno oscuro. Amarillo porque contrasta con las tres pistas
+ *     (madera marrón, cemento gris, sintético azul) y con casi todas las camisetas; el contorno la
+ *     despega del piso claro y de los cuerpos. Antes: naranja oscuro sobre madera marrón.
+ *  4. Fuera de cuadro: flecha en el borde de la pantalla apuntando hacia ella.
+ *
+ * Tamaños en PÍXELES de pantalla (divididos por `ppm`), no en metros: se ve igual de bien con la
+ * cámara cerca o en "cancha completa".
+ */
+const BALL_MIN_PX = 5.4
+const BALL_BODY = "#fde047"
+const BALL_SHADE = "#eab308"
+const TRAIL_LEN = 10
+const ballTrail: Array<{ x: number; y: number }> = []
+
+function drawBall(ctx: CanvasRenderingContext2D, w: World, cam: Camera, x: number, y: number, bpr: number, live: boolean) {
+  const px = 1 / cam.ppm // un píxel CSS, en metros
+  const p = w.puck
+  const loose = !p.carrierId
+  const speed = Math.hypot(p.vx, p.vy)
+  const now = performance.now()
+
+  // --- 1) estela
+  const lastT = ballTrail[ballTrail.length - 1]
+  if (!loose || (lastT && Math.hypot(lastT.x - x, lastT.y - y) > 3)) ballTrail.length = 0 // la llevan / saltó (saque, repetición)
+  if (!lastT || lastT.x !== x || lastT.y !== y) {
+    ballTrail.push({ x, y })
+    if (ballTrail.length > TRAIL_LEN) ballTrail.shift()
+  }
+  if (loose && speed > 5 && ballTrail.length > 2) {
+    // Una sola forma rellena (cometa que se afina hacia la cola), no un trazo por tramo: los tramos
+    // semitransparentes encimados dejaban "cuentas" en las uniones. Dos pasadas: toda la cola tenue,
+    // y la mitad de adelante más fuerte — así se apaga hacia atrás sin gradiente.
+    const strength = 0.4 + 0.6 * Math.min(1, (speed - 5) / 12)
+    ctx.save()
+    ctx.fillStyle = "#ffffff"
+    for (const [from, alpha] of [[0, 0.22], [Math.floor(ballTrail.length / 2), 0.3]] as const) {
+      const pts = ballTrail.slice(from)
+      if (pts.length < 2) continue
+      const n = pts.length
+      const left: Array<[number, number]> = [], right: Array<[number, number]> = []
+      for (let i = 0; i < n; i++) {
+        const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)]
+        let nx = -(b.y - a.y), ny = b.x - a.x
+        const nl = Math.hypot(nx, ny) || 1
+        nx /= nl; ny /= nl
+        const hw = bpr * (0.15 + 0.85 * (i / (n - 1)))
+        left.push([pts[i].x + nx * hw, pts[i].y + ny * hw])
+        right.push([pts[i].x - nx * hw, pts[i].y - ny * hw])
+      }
+      ctx.globalAlpha = alpha * strength
+      ctx.beginPath()
+      ctx.moveTo(left[0][0], left[0][1])
+      for (let i = 1; i < n; i++) ctx.lineTo(left[i][0], left[i][1])
+      ctx.arc(pts[n - 1].x, pts[n - 1].y, bpr, Math.atan2(left[n - 1][1] - pts[n - 1].y, left[n - 1][0] - pts[n - 1].x), Math.atan2(right[n - 1][1] - pts[n - 1].y, right[n - 1][0] - pts[n - 1].x), true)
+      for (let i = n - 1; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1])
+      ctx.closePath()
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+
+  // --- 2) súper tiro: "encendida" (sin gradiente: tres discos concéntricos que titilan)
+  const lit = p.superShot && loose
+  if (lit) {
+    const t = now / 1000
+    const flicker = 0.75 + 0.25 * Math.sin(t * 26) * Math.sin(t * 11 + 1)
+    ctx.save()
+    ctx.fillStyle = "#ef4444"; ctx.globalAlpha = 0.22 * flicker
+    ctx.beginPath(); ctx.arc(x, y, bpr * (3.2 + flicker * 0.6), 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = "#fb923c"; ctx.globalAlpha = 0.4 * flicker
+    ctx.beginPath(); ctx.arc(x, y, bpr * 2.2, 0, Math.PI * 2); ctx.fill()
+    ctx.fillStyle = "#fef08a"; ctx.globalAlpha = 0.6
+    ctx.beginPath(); ctx.arc(x, y, bpr * 1.45, 0, Math.PI * 2); ctx.fill()
+    ctx.restore()
+  }
+
+  // --- 2b) sonar: aro que se expande, solo suelta y en juego (llevada, el portador ya está marcado)
+  if (loose && live && !lit) {
+    const period = 1000
+    const ph = (now % period) / period
+    ctx.save()
+    ctx.strokeStyle = BALL_BODY
+    ctx.globalAlpha = 0.75 * (1 - ph)
+    ctx.lineWidth = 2 * px
+    ctx.beginPath(); ctx.arc(x, y, bpr + (5 + ph * 20) * px, 0, Math.PI * 2); ctx.stroke()
+    ctx.restore()
+  }
+  if (!loose) {
+    // Imán al palo: mientras alguien la controla, un resplandor suave y quieto que la "pega" a la pala.
+    ctx.save()
+    ctx.globalAlpha = 0.45
+    ctx.fillStyle = "#7dd3fc"
+    ctx.beginPath(); ctx.arc(x, y, bpr * 1.9, 0, Math.PI * 2); ctx.fill()
+    ctx.restore()
+  }
+
+  // --- 3) la bocha: contorno oscuro + cuerpo amarillo + sombreado + brillo
+  ctx.fillStyle = "rgba(10,10,10,0.9)"
+  ctx.beginPath(); ctx.arc(x, y, bpr + 1.4 * px, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = lit ? "#fb923c" : BALL_SHADE
+  ctx.beginPath(); ctx.arc(x, y, bpr, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = lit ? "#fef08a" : BALL_BODY
+  ctx.beginPath(); ctx.arc(x - bpr * 0.12, y - bpr * 0.12, bpr * 0.8, 0, Math.PI * 2); ctx.fill()
+  ctx.fillStyle = "rgba(255,255,255,0.85)"
+  ctx.beginPath(); ctx.arc(x - bpr * 0.35, y - bpr * 0.35, bpr * 0.26, 0, Math.PI * 2); ctx.fill()
+
+  // --- 4) fuera de cuadro: flecha en el borde, apuntando a la bocha
+  const halfW = cam.width / 2, halfH = cam.height / 2
+  const dx = x - cam.cx, dy = y - cam.cy
+  const inset = 16 * px
+  if (Math.abs(dx) > halfW - bpr || Math.abs(dy) > halfH - bpr) {
+    const k = Math.min((halfW - inset) / Math.max(1e-6, Math.abs(dx)), (halfH - inset) / Math.max(1e-6, Math.abs(dy)))
+    const ax = cam.cx + dx * k, ay = cam.cy + dy * k
+    const ang = Math.atan2(dy, dx)
+    const L = 14 * px, Wd = 9 * px
+    ctx.save()
+    ctx.translate(ax, ay)
+    ctx.rotate(ang)
+    ctx.beginPath()
+    ctx.moveTo(L * 0.6, 0); ctx.lineTo(-L * 0.4, -Wd); ctx.lineTo(-L * 0.4, Wd); ctx.closePath()
+    ctx.fillStyle = BALL_BODY
+    ctx.strokeStyle = "rgba(10,10,10,0.9)"
+    ctx.lineWidth = 2 * px
+    ctx.fill(); ctx.stroke()
+    ctx.restore()
+  }
 }
 
 export interface EdgeChip { id: string; x: number; y: number; angle: number }
@@ -1608,11 +1993,12 @@ function drawComboLamps(ctx: CanvasRenderingContext2D, w: World, o: DrawOptions,
     ctx.fillStyle = lit ? o.colors[combo.side] : "rgba(255,255,255,0.12)"
     ctx.fill()
     if (lit) {
+      // Halo sin `shadowBlur` (Ronda 61): un disco más grande y tenue detrás, después la lámpara encima.
       ctx.save()
-      ctx.shadowColor = o.colors[combo.side]
-      ctx.shadowBlur = r * 1.6
-      ctx.fill()
+      ctx.globalAlpha = 0.3
+      ctx.beginPath(); ctx.arc(cx, y, r * 1.7, 0, Math.PI * 2); ctx.fill()
       ctx.restore()
+      ctx.beginPath(); ctx.arc(cx, y, r, 0, Math.PI * 2); ctx.fill()
     }
     ctx.strokeStyle = "rgba(255,255,255,0.5)"
     ctx.lineWidth = Math.max(1, r * 0.14)

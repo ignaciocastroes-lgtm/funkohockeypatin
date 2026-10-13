@@ -76,6 +76,7 @@ function placeKickoff(w: World) {
     g.reactTimer = 0
     g.wasIncoming = false
     g.lastShotAngle = null
+    g.diving = false; g.shotDive = false; g.downTimer = 0
   }
   const p = w.puck
   p.x = L / 2; p.y = W / 2; p.vx = 0; p.vy = 0
@@ -133,6 +134,7 @@ export function awardPenalty(w: World, side: Side) {
     g.y = gg.cy
     g.vx = 0; g.vy = 0; g.px = g.x; g.py = g.y
     g.aimY = gg.cy; g.reactTimer = 0; g.wasIncoming = false; g.lastShotAngle = null
+    g.diving = false; g.shotDive = false; g.downTimer = 0
   }
   const p = w.puck
   p.x = sx; p.y = geom.cy; p.vx = 0; p.vy = 0; p.px = p.x; p.py = p.y
@@ -201,6 +203,8 @@ export function createWorld(cfg: WorldConfig = {}): World {
     nextKickoffSide: null,
     penaltyActive: false,
     goalieSkill: cfg.goalieSkill ?? [0.7, 0.7],
+    carrierShield: cfg.carrierShield ?? [1, 1],
+    aimAssist: cfg.aimAssist ?? [1, 1],
   }
   placeKickoff(w)
   return w
@@ -604,18 +608,30 @@ function updateGoalies(w: World, dt: number) {
     g.wasIncoming = incoming
     g.lastShotAngle = incoming ? Math.atan2(p.vy, p.vx) : null
     if (g.reactTimer > 0) g.reactTimer -= dt
-    g.diving = incoming && g.reactTimer <= 0
-    if (incoming && g.reactTimer <= 0) {
+    const wasDiving = !!g.diving
+    const shotDive = incoming && g.reactTimer <= 0
+    // Tirado en el piso: cuando termina la volada no se levanta en el acto (`GOALIE.getUpTime`) —
+    // sigue ocupando el piso de costado y no puede correrse de lado. Un rebote rápido al otro palo
+    // le gana: así pasa de verdad.
+    if (g.shotDive && !shotDive) g.downTimer = GOALIE.getUpTime
+    else if (shotDive) g.downTimer = 0
+    else if ((g.downTimer ?? 0) > 0) g.downTimer = Math.max(0, (g.downTimer ?? 0) - dt)
+    g.shotDive = shotDive
+    g.diving = shotDive || (g.downTimer ?? 0) > 0
+    if (shotDive) {
       const t = clamp((g.x - p.x) / p.vx, 0, 1.2)
       seenY = p.y + p.vy * t
+      // La volada elige lado al tirarse y no lo cambia en el aire (un arquero tirado no se da vuelta).
+      if (!wasDiving) g.diveSide = seenY >= g.y ? 1 : -1
     }
     // retardo de reacción: su puntería sigue a lo que ve con inercia
     g.aimY += (seenY - g.aimY) * kAim
     const targetY = clamp(g.aimY, geom.cy - limit, geom.cy + limit)
-    const desired = clamp((targetY - g.y) * 9, -maxSpeed, maxSpeed)
+    const down = !shotDive && (g.downTimer ?? 0) > 0
+    const desired = down ? 0 : clamp((targetY - g.y) * 9, -maxSpeed, maxSpeed)
     const dv = desired - g.vy
     const maxDelta = accel * dt
-    g.vy += clamp(dv, -maxDelta, maxDelta)
+    g.vy = down ? 0 : g.vy + clamp(dv, -maxDelta, maxDelta)
     g.y += g.vy * dt
     g.y = clamp(g.y, geom.cy - limit, geom.cy + limit)
     g.vx = 0
@@ -868,7 +884,10 @@ function updatePuck(w: World, dt: number) {
             // Robo con cono explícito: solo desde donde mira el portador (el cuerpo protege el
             // puck por la espalda). No es un efecto emergente de la geometría.
             const angToThief = Math.atan2(o.y - carrier.y, o.x - carrier.x)
-            if (Math.abs(angleDiff(carrier.heading, angToThief)) > SKATER.stealConeHalfAngle) continue
+            // `carrierShield` (dificultad, Ronda 61): en Fácil el cono por el que te la pueden sacar es
+            // más angosto — protegés mejor la bocha con el cuerpo. Por defecto 1 = el de siempre.
+            const cone = SKATER.stealConeHalfAngle * (w.carrierShield?.[carrier.side] ?? 1)
+            if (Math.abs(angleDiff(carrier.heading, angToThief)) > cone) continue
             const prev = carrier
             releaseCarrier(w, prev, SKATER.lostCooldown)
             giveTo(w, o)
@@ -939,8 +958,10 @@ function updatePuck(w: World, dt: number) {
     for (const g of w.goalies) {
       const oppGoal = GOALS[g.side === 0 ? 1 : 0] // el arco RIVAL: adonde apunta cualquier despeje
       const min = g.radius + p.radius
+      // Volada (Ronda 61): tirado al piso, el centro del cuerpo está corrido hacia el lado del tiro.
+      const cyBody = g.y + (g.diving ? (g.diveSide ?? 1) * GOALIE.diveShift : 0)
       const dx = p.x - g.x
-      const dy = p.y - g.y
+      const dy = p.y - cyBody
       // Estirada: si está atajando un tiro de verdad (ya reaccionó, `updateGoalies` lo marcó este
       // mismo paso), el cuerpo cubre más ancho que el círculo del dibujo en el sentido del arco (Y)
       // — palo, pads, mariposa. La profundidad (X) no cambia: esto no es un imán, un tiro con
@@ -948,7 +969,9 @@ function updatePuck(w: World, dt: number) {
       // el mismo alcance (técnica pareja para cualquier dificultad — ver `updateGoalies`).
       const diveReach = g.diving ? GOALIE.diveReach : 0
       const minY = min + diveReach
-      const inReach = (dx * dx) / (min * min) + (dy * dy) / (minY * minY) <= 1
+      // Tirado de costado el cuerpo es más largo (Y) pero más FINO hacia la cancha (X): `diveDepth`.
+      const minX = g.diving ? g.radius * GOALIE.diveDepth + p.radius : min
+      const inReach = (dx * dx) / (minX * minX) + (dy * dy) / (minY * minY) <= 1
       if (!inReach) continue
       const d = Math.hypot(dx, dy)
       // Golazo de combo: ya armó 3 toques y tira con fuerza — el arquero no lo frena en todo este vuelo
@@ -958,7 +981,7 @@ function updatePuck(w: World, dt: number) {
       const nx = d > 1e-9 ? dx / d : 1
       const ny = d > 1e-9 ? dy / d : 0
       p.x = g.x + nx * (min + 1e-4)
-      p.y = g.y + ny * (min + 1e-4)
+      p.y = cyBody + ny * (min + 1e-4)
       const rvx = p.vx - g.vx
       const rvy = p.vy - g.vy
       const vn = rvx * nx + rvy * ny

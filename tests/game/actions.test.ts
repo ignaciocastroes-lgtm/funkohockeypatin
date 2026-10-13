@@ -23,7 +23,7 @@ test("acciones: con la pelota, el pad manda la dirección del tiro (no hacia don
   assert.ok(w.puck.vy > Math.abs(w.puck.vx) * 2, `debía salir hacia +y, salió (${w.puck.vx.toFixed(1)}, ${w.puck.vy.toFixed(1)})`)
 })
 
-test("acciones: pase con el pad apuntando a un compañero le pasa a ÉL y le da el control", () => {
+test("acciones: entre dos compañeros libres, el stick decide a cuál va el pase (y le da el control)", () => {
   const { w, me } = withCarrier()
   const mates = w.skaters.filter((s) => s.side === 0 && s.id !== me.id)
   place(w, mates[0].id, 26, 10) // a la derecha
@@ -33,12 +33,35 @@ test("acciones: pase con el pad apuntando a un compañero le pasa a ÉL y le da 
   assert.ok(w.puck.vx < 0)
 })
 
-test("acciones: pase con el pad apuntando al vacío sale al espacio en esa dirección", () => {
+test("acciones (Ronda 61): con el stick hacia un compañero TAPADO, el pase va al que está libre", () => {
+  // Antes: iba al del cono del stick aunque tuviera un rival encima — había que girar el stick.
+  const { w, me } = withCarrier()
+  const mates = w.skaters.filter((s) => s.side === 0 && s.id !== me.id)
+  const rival = w.skaters.find((s) => s.side === 1)!
+  place(w, mates[0].id, 27, 10) // adelante, hacia donde corre/apunta...
+  place(w, rival.id, 23.5, 10) // ...pero con un rival cortando la línea
+  place(w, mates[1].id, 20, 16) // al costado y libre
+  const r = performButton(w, 0, me.id, "pase", BTN_POWER.pase, 0) // stick hacia adelante (+x)
+  assert.equal(r.lockReceiverId, mates[1].id)
+  assert.ok(w.puck.vy > 0, "salió hacia el libre (+y)")
+})
+
+test("acciones (Ronda 61): un compañero con un rival pegado no cuenta como libre aunque la línea esté abierta", () => {
+  const { w, me } = withCarrier()
+  const mates = w.skaters.filter((s) => s.side === 0 && s.id !== me.id)
+  const rival = w.skaters.find((s) => s.side === 1)!
+  place(w, mates[0].id, 27, 10)
+  place(w, rival.id, 27.6, 10.9) // encima del receptor (no en la línea)
+  place(w, mates[1].id, 20, 3)
+  const r = performButton(w, 0, me.id, "pase-fuerte", BTN_POWER["pase-fuerte"], 0)
+  assert.equal(r.lockReceiverId, mates[1].id)
+})
+
+test("acciones: con el stick apuntando al vacío el pase NO se regala al espacio: va al compañero libre", () => {
   const { w, me } = withCarrier()
   const r = performButton(w, 0, me.id, "pase", BTN_POWER.pase, -Math.PI / 2) // arriba, sin nadie
-  assert.equal(r.lockReceiverId, undefined)
+  assert.ok(r.lockReceiverId !== undefined, "le pasó a un compañero")
   assert.equal(w.puck.carrierId, null)
-  assert.ok(w.puck.vy < 0)
 })
 
 test("acciones: tiro fuerte es súper solo si el jugador tiene el tanque", () => {
